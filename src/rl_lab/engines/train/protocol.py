@@ -1,13 +1,11 @@
 """Backend-neutral contract used by training orchestration."""
 
-from typing import Protocol, TypeVar, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from torch import Tensor, device
 
-BatchT = TypeVar("BatchT", contravariant=True)
 
-
-class TrainEngine(Protocol[BatchT]):
+class TrainEngine(Protocol):
     """Fundamental model and optimizer operations required for training."""
 
     @property
@@ -15,8 +13,8 @@ class TrainEngine(Protocol[BatchT]):
         """Device on which the training model executes."""
         ...
 
-    def forward(self, batch: BatchT, /) -> object:
-        """Execute the training model for a batch."""
+    def forward(self, **model_inputs: Tensor) -> Tensor:
+        """Execute the training model and return its primary tensor output."""
         ...
 
     def backward(self, loss: Tensor, /) -> None:
@@ -47,4 +45,3 @@ class SupportsSchedulerStep(Protocol):
     def scheduler_step(self) -> None:
         """Advance the scheduler after an optimizer update."""
         ...
-
