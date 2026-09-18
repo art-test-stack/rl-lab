@@ -1,19 +1,14 @@
 """Contract for algorithm-specific objective computation."""
 
-from typing import Protocol, TypeVar
+from typing import Any, Protocol
 
 from rl_lab.core.types import ObjectiveOutput
 from rl_lab.engines.train.protocol import TrainEngine
 
-BatchT = TypeVar("BatchT")
 
-
-class Objective(Protocol[BatchT]):
+class Objective(Protocol):
     """Compute a loss and metrics without owning training orchestration."""
 
-    def __call__(
-        self, engine: TrainEngine[BatchT], batch: BatchT, /
-    ) -> ObjectiveOutput:
+    def __call__(self, engine: TrainEngine, batch: Any, /) -> ObjectiveOutput:
         """Evaluate the objective for one batch."""
         ...
-

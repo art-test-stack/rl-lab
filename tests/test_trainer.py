@@ -29,9 +29,9 @@ class DummyTrainEngine:
     def device(self) -> torch.device:
         return torch.device("cpu")
 
-    def forward(self, batch: Batch, /) -> Tensor:
+    def forward(self, **model_inputs: Tensor) -> Tensor:
         self.calls.append("forward")
-        return self.model(batch.inputs)
+        return self.model(model_inputs["inputs"])
 
     def backward(self, loss: Tensor, /) -> None:
         self.calls.append("backward")
@@ -58,11 +58,8 @@ class DummyTrainEngine:
 
 
 class MeanSquaredError:
-    def __call__(
-        self, engine: TrainEngine[Batch], batch: Batch, /
-    ) -> ObjectiveOutput:
-        predictions = engine.forward(batch)
-        assert isinstance(predictions, Tensor)
+    def __call__(self, engine: TrainEngine, batch: Batch, /) -> ObjectiveOutput:
+        predictions = engine.forward(inputs=batch.inputs)
         loss = torch.nn.functional.mse_loss(predictions, batch.targets)
         return ObjectiveOutput(
             loss=loss,
@@ -72,11 +69,8 @@ class MeanSquaredError:
 
 
 class MeanAbsoluteError:
-    def __call__(
-        self, engine: TrainEngine[Batch], batch: Batch, /
-    ) -> ObjectiveOutput:
-        predictions = engine.forward(batch)
-        assert isinstance(predictions, Tensor)
+    def __call__(self, engine: TrainEngine, batch: Batch, /) -> ObjectiveOutput:
+        predictions = engine.forward(inputs=batch.inputs)
         loss = torch.nn.functional.l1_loss(predictions, batch.targets)
         return ObjectiveOutput(loss=loss, metrics={"mae": loss.detach()})
 
@@ -110,6 +104,60 @@ def test_base_trainer_executes_one_training_step() -> None:
     assert trainer.state.global_step == 1
     assert trainer.state.optimizer_step == 1
     assert trainer.state.tokens_seen == 7
+
+
+def test_base_trainer_accumulates_before_one_optimizer_step() -> None:
+    engine = DummyTrainEngine()
+    trainer = BaseTrainer(engine=engine, objective=MeanSquaredError())
+
+    outputs = trainer.train_accumulation_step([make_batch(), make_batch()])
+
+    assert engine.calls == [
+        "train",
+        "zero_grad",
+        "forward",
+        "backward",
+        "forward",
+        "backward",
+        "step",
+        "scheduler_step",
+    ]
+    assert len(outputs) == 2
+    assert trainer.state.global_step == 1
+    assert trainer.state.optimizer_step == 1
+    assert trainer.state.tokens_seen == 14
+
+
+def test_accumulated_gradient_is_mean_of_microbatch_gradients() -> None:
+    engine = DummyTrainEngine()
+    reference = DummyTrainEngine()
+    reference.model.load_state_dict(engine.model.state_dict())
+    batches = [make_batch(), make_batch()]
+
+    BaseTrainer(engine=engine, objective=MeanSquaredError()).train_accumulation_step(
+        batches
+    )
+
+    reference.optimizer.zero_grad()
+    for batch in batches:
+        predictions = reference.model(batch.inputs)
+        loss = torch.nn.functional.mse_loss(predictions, batch.targets)
+        (loss / len(batches)).backward()
+    reference.optimizer.step()
+
+    for actual, expected in zip(engine.model.parameters(), reference.model.parameters()):
+        assert torch.allclose(actual, expected)
+
+
+def test_accumulation_requires_at_least_one_microbatch() -> None:
+    trainer = BaseTrainer(engine=DummyTrainEngine(), objective=MeanSquaredError())
+
+    try:
+        trainer.train_accumulation_step([])
+    except ValueError as error:
+        assert str(error) == "at least one microbatch is required"
+    else:
+        raise AssertionError("expected an empty accumulation step to fail")
 
 
 def test_base_trainer_has_no_transformers_dependency() -> None:
