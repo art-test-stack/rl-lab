@@ -11,7 +11,10 @@ MetricValue: TypeAlias = int | float | Tensor
 
 @dataclass(frozen=True, slots=True)
 class ObjectiveOutput:
-    """Result of evaluating an objective for one training batch."""
+    """Result of evaluating an objective for one training batch.
+
+    This is an rl-lab interface type and is not derived from a paper.
+    """
 
     loss: Tensor
     metrics: Mapping[str, MetricValue] = field(default_factory=dict)

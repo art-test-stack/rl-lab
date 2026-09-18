@@ -10,7 +10,16 @@ from rl_lab.objectives.base import Objective
 
 
 class BaseTrainer:
-    """Sequence engine operations while delegating loss semantics."""
+    """Sequence engine operations while delegating loss semantics.
+
+    The class is an rl-lab orchestration abstraction. Its accumulation order
+    follows the conventional pattern of several backward passes followed by
+    one optimizer update; nanochat's ``chat_rl.py`` is the concrete
+    implementation reference used for the first RL use case.
+
+    Implementation reference:
+        https://github.com/karpathy/nanochat/blob/master/scripts/chat_rl.py
+    """
 
     def __init__(
         self,
