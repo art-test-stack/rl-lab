@@ -6,7 +6,11 @@ from torch import Tensor, device
 
 
 class TrainEngine(Protocol):
-    """Fundamental model and optimizer operations required for training."""
+    """Fundamental model and optimizer operations required for training.
+
+    This backend boundary is an rl-lab software abstraction, not an algorithm
+    attributed to a paper.
+    """
 
     @property
     def device(self) -> device:
@@ -40,7 +44,10 @@ class TrainEngine(Protocol):
 
 @runtime_checkable
 class SupportsSchedulerStep(Protocol):
-    """Optional capability for engines that own a learning-rate scheduler."""
+    """Optional capability for engines that own a learning-rate scheduler.
+
+    This is an rl-lab software capability and is not derived from a paper.
+    """
 
     def scheduler_step(self) -> None:
         """Advance the scheduler after an optimizer update."""

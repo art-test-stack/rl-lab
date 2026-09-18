@@ -5,7 +5,10 @@ from dataclasses import dataclass
 
 @dataclass(slots=True)
 class TrainerState:
-    """Counters that describe progress through training."""
+    """Counters that describe progress through training.
+
+    This is an rl-lab bookkeeping type and is not derived from a paper.
+    """
 
     global_step: int = 0
     optimizer_step: int = 0

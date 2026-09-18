@@ -7,7 +7,11 @@ from rl_lab.engines.train.protocol import TrainEngine
 
 
 class Objective(Protocol):
-    """Compute a loss and metrics without owning training orchestration."""
+    """Compute a loss and metrics without owning training orchestration.
+
+    This separation is an rl-lab software contract, not a literature-derived
+    algorithm.
+    """
 
     def __call__(self, engine: TrainEngine, batch: Any, /) -> ObjectiveOutput:
         """Evaluate the objective for one batch."""

@@ -12,7 +12,17 @@ from rl_lab.engines.train.protocol import TrainEngine
 
 @dataclass(frozen=True, slots=True)
 class PolicyGradientBatch:
-    """One policy-gradient microbatch with externally computed advantages."""
+    """One policy-gradient microbatch with externally computed advantages.
+
+    The dataclass itself is an rl-lab interface, not a named construct from a
+    paper. ``advantages`` and reward-weighted token log probabilities come
+    from the REINFORCE estimator. ``completion_mask`` and the causal
+    ``input_ids``/``labels`` layout follow the initial nanochat RL use case.
+
+    Sources:
+        Williams (1992), doi:10.1007/BF00992696.
+        https://github.com/karpathy/nanochat/blob/master/scripts/chat_rl.py
+    """
 
     input_ids: Tensor
     labels: Tensor
@@ -41,12 +51,32 @@ class PolicyGradientBatch:
 
 
 def centered_advantages(rewards: Tensor, *, dim: int = -1) -> Tensor:
-    """Use the group mean reward as a baseline without variance scaling."""
+    """Use the group mean reward as a baseline without variance scaling.
+
+    REINFORCE supports subtracting a baseline from the reinforcement signal.
+    This exact group-mean-without-standard-deviation variant follows
+    nanochat's ``chat_rl.py`` rather than being claimed as a new algorithm.
+
+    Sources:
+        Williams (1992), doi:10.1007/BF00992696.
+        https://github.com/karpathy/nanochat/blob/master/scripts/chat_rl.py
+    """
     return rewards - rewards.mean(dim=dim, keepdim=True)
 
 
 class ReinforceObjective:
-    """Maximize advantage-weighted completion-token log probabilities."""
+    """Maximize advantage-weighted completion-token log probabilities.
+
+    The score-function objective is REINFORCE. Normalizing the summed loss by
+    the total number of completion tokens follows DAPO's token-level policy
+    gradient loss and the simplified nanochat implementation. This objective
+    intentionally contains neither a PPO ratio nor a KL penalty.
+
+    Sources:
+        Williams (1992), doi:10.1007/BF00992696.
+        Yu et al. (2025), arXiv:2503.14476, section 3.3.
+        https://github.com/karpathy/nanochat/blob/master/scripts/chat_rl.py
+    """
 
     def __call__(
         self, engine: TrainEngine, batch: PolicyGradientBatch, /
