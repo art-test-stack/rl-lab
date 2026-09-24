@@ -4,7 +4,7 @@ https://huggingface.co/datasets/Idavidrein/gpqa
 """
 
 from datasets import load_dataset
-from .common import Task
+from ._base import Task
 
 class GPQA(Task):
     def __init__(self, subset, split, **kwargs):

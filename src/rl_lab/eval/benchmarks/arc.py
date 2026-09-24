@@ -6,7 +6,7 @@ Adapted from https://github.com/karpathy/nanochat/blob/a5a3a33c63f996c56c0976d45
 """
 
 from datasets import load_dataset
-from .common import Task, render_mc
+from ._base import Task, render_mc
 
 class ARC(Task):
 

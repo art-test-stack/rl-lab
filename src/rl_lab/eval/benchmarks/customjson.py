@@ -7,7 +7,7 @@ https://github.com/karpathy/nanochat/blob/a5a3a33c63f996c56c0976d45ea47239b3fd74
 
 import os
 import json
-from .common import Task
+from ._base import Task
 
 class CustomJSON(Task):
     """

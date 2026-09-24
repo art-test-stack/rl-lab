@@ -18,7 +18,7 @@ Adapted from https://github.com/karpathy/nanochat/blob/a5a3a33c63f996c56c0976d45
 
 import re
 from datasets import load_dataset
-from .common import Task
+from ._base import Task
 
 
 GSM_RE = re.compile(r"#### (\-?[0-9\.\,]+)")

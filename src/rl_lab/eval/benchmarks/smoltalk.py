@@ -7,7 +7,7 @@ https://github.com/karpathy/nanochat/blob/a5a3a33c63f996c56c0976d45ea47239b3fd74
 """
 
 from datasets import load_dataset
-from .common import Task
+from ._base import Task
 
 class SmolTalk(Task):
     """ smol-smoltalk dataset. train is 460K rows, test is 24K rows. """

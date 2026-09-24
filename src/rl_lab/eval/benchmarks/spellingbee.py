@@ -30,7 +30,7 @@ Adapted from https://github.com/karpathy/nanochat/blob/a5a3a33c63f996c56c0976d45
 
 import re
 import random
-from .common import Task
+from ._base import Task
 from nanochat.common import download_file_with_lock # TODO: handle this
 
 # Letters of the alphabet
