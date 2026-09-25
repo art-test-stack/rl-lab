@@ -3,9 +3,10 @@ name = "rl-lab"
 version = "0.1.0"
 description = "A lightweight and educational, PyTorch-native post-training recipes"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "datasets>=5.0.1",
+    "tokenizers>=0.23.2",
     "torch>=2.14.0",
     "transformers>=5.17.0",
 ]
