@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from rl_lab.engines import GenerationConfig, OpenAIEngine
+from rl_lab.engines import CompletionEngine, GenerationConfig
 from rl_lab.engines.base import trim_stop
 
 
@@ -35,8 +35,12 @@ def test_stop_configuration_is_copied():
 
 
 def test_capabilities_fail_before_inference():
-    engine = OpenAIEngine("model", client=object())
-    engine.require("generation", "chat")
+    class GenerationOnlyEngine(CompletionEngine):
+        def generate(self, prompts, config):
+            return []
+
+    engine = GenerationOnlyEngine()
+    engine.require("generation")
     with pytest.raises(ValueError, match="loglikelihood"):
         engine.require("loglikelihood")
     with pytest.raises(NotImplementedError, match="loglikelihood"):
@@ -51,7 +55,7 @@ def test_package_does_not_import_backend_dependencies():
             """
 import sys
 from rl_lab.engines import create_engine
-assert not ({'torch', 'transformers', 'vllm', 'openai'} & sys.modules.keys())
+assert not ({'torch', 'transformers', 'vllm'} & sys.modules.keys())
 """,
         ],
         check=True,

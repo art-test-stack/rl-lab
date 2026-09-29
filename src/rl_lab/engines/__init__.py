@@ -11,7 +11,6 @@ from .base import (
     ModelInput,
     TextPrompt,
 )
-from .openai import OpenAIEngine
 from .router import EngineConfig, EngineRouter, create_engine
 from .transformers import TransformersEngine
 from .vllm import VLLMEngine
@@ -30,6 +29,5 @@ __all__ = [
     "TextPrompt",
     "TransformersEngine",
     "VLLMEngine",
-    "OpenAIEngine",
     "create_engine",
 ]

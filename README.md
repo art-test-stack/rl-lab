@@ -31,30 +31,24 @@ RL-lab is a light-weight framework in Python for reinforcement learning methods 
 ```
 
 
-## Inference engines and evaluation
+## Inference engines
 
-An engine executes inference. It can borrow the training model, load its own
-model for a standalone run, or call an existing endpoint. The factory only
-constructs the adapter; it never starts a server or initializes distributed
-training.
+An engine executes inference. It can borrow the training model or load its own
+model for a standalone run. The factory constructs the adapter without starting
+a server or initializing distributed training.
 
-### Evaluate the current training weights
+### Use the current training weights
 
 ```python
-from rl_lab.engines import TransformersEngine, GenerationConfig
-from rl_lab.eval import evaluate
-from rl_lab.tasks.gsm8k import GSM8K
+from rl_lab.engines import TransformersEngine, GenerationConfig, ChatPrompt
 
 # model and tokenizer are the exact objects already used by the trainer.
 engine = TransformersEngine.attach(model, tokenizer, batch_size=8)
-result = evaluate(
-    GSM8K(subset="main", split="test"),
-    engine,
-    config=GenerationConfig(max_new_tokens=512),
-    limit=32,
-    system_prompt="End your answer with #### followed by the numerical answer.",
+outputs = engine.generate(
+    [ChatPrompt([{"role": "user", "content": "What is 2 + 2?"}])],
+    GenerationConfig(max_new_tokens=64),
 )
-print(result.score)
+print(outputs[0].text)
 ```
 
 `attach()` does not load/copy weights or move the model. Inference runs without
@@ -70,30 +64,14 @@ not automatically unwrap models or promise rank-zero-only sharded inference.
 Pause training while evaluating a borrowed model; these operations are not
 thread-safe against concurrent training or generation on that same object.
 
-### Standalone execution
-
-```bash
-uv sync --locked --group dev
-uv run python -m rl_lab.eval --model Qwen/Qwen2.5-0.5B-Instruct \
-    --task gsm8k --engine transformers --device cuda --limit 32
-uv run python -m rl_lab.eval --model Qwen/Qwen2.5-0.5B-Instruct \
-    --task mmlu --engine transformers --device cuda --limit 32
-```
-
-The evaluator removes the final reference assistant message before inference.
-GSM8K uses generation and the existing `####` numerical-answer scorer; the CLI
-adds the corresponding formatting instruction. MMLU scores each candidate
-letter's summed log probability. These are simple zero-shot conversation-task
-protocols, not a claim of equivalence to other benchmark harnesses. They require
-a tokenizer with a chat template. The existing CORE script is separate and still
-needs migration from its `gpt-lab` tokenizer dependency.
+### Load a standalone model
 
 ```python
-from rl_lab.engines import create_engine, ChatPrompt, GenerationConfig, LogLikelihoodRequest
+from rl_lab.engines import create_engine, GenerationConfig, LogLikelihoodRequest
 
 engine = create_engine("transformers", model_name="your-model", device="cuda")
 outputs = engine.generate(
-    ["A raw completion prompt", ChatPrompt([{"role": "user", "content": "Hello"}])],
+    ["A raw completion prompt"],
     GenerationConfig(max_new_tokens=64, temperature=0.0, stop=["END"]),
 )
 engine.require("loglikelihood")
@@ -113,38 +91,26 @@ Boundaries that still split a token fail explicitly instead of silently scoring
 a different continuation. This reference implementation scores requests one at
 a time and does not truncate overlong contexts.
 
-### Optional backends
+### Offline vLLM
 
-Install optional backend packages in a compatible environment (`uv pip install
-vllm` or `uv pip install openai`). They are deliberately absent from the base lock:
-vLLM has its own Python/PyTorch/CUDA compatibility constraints. An incompatible
-vLLM runtime can run separately behind the remote adapter. Importing
-`rl_lab.engines` does not import either optional package, Torch, or Transformers.
+Install vLLM in a compatible environment (`uv pip install vllm`). It is deliberately
+absent from the base lock because it has its own Python/PyTorch/CUDA compatibility
+constraints. Importing `rl_lab.engines` does not import vLLM, Torch or Transformers.
 
 ```python
-# Offline vLLM: its own model runtime, no HTTP server, usable as one HF Job.
+# Its own model runtime, no HTTP server, usable as one HF Job.
 engine = create_engine("vllm", model_name="your-model", tensor_parallel_size=1)
-
-# Remote: the endpoint must already exist. Credentials can use OPENAI_API_KEY.
-engine = create_engine(
-    "openai", model_name="served-model", base_url="https://your-endpoint/v1",
-)
 ```
 
 | Backend | Generation/chat | Continuation likelihood | Reuses live training model |
 | --- | --- | --- | --- |
 | Transformers | Yes | Yes | Yes |
 | Offline vLLM | Yes | Not yet | No |
-| OpenAI-compatible client | Yes | Not exposed | No |
 
-The remote adapter uses `/completions` for raw text and `/chat/completions` for
-chat; the selected server/model must support that endpoint and the supplied
-sampling parameters. It never starts or stops the remote service. Borrowed
-clients are not closed; adapter-created clients are closed by `close()` or an
-optional `with` block. Offline vLLM cleanup follows the runtime's object/process
-lifetime; `close()` drops the adapter reference, without private shutdown calls
-or global distributed teardown. Prefer a dedicated job for its independent GPU
-runtime rather than repeatedly loading it alongside a live trainer.
+Offline vLLM cleanup follows the runtime's object/process lifetime; `close()`
+drops the adapter reference, without private shutdown calls or global distributed
+teardown. Prefer a dedicated job for its independent GPU runtime rather than
+repeatedly loading it alongside a live trainer.
 
 ### Tests
 
@@ -157,6 +123,5 @@ The GitHub Actions worker runs the same locked setup on Python 3.14 for pull
 requests and pushes to `main`, and uploads a JUnit report. Tests create a tiny
 random GPT-2 and a tokenizer locally, run on CPU with Hub access disabled, and
 cover attachment, restoration after errors, batching, stop handling, likelihoods,
-local checkpoint loading, factory validation and evaluator answer isolation.
-vLLM and remote API calls are mocked; real GPU/endpoint integration runs remain
-separate from this CI suite.
+local checkpoint loading, factory validation and capabilities. vLLM calls are
+mocked; real GPU integration runs remain separate from this CI suite.

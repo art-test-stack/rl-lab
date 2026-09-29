@@ -16,7 +16,6 @@ def test_factory_attaches_without_loading(model, tokenizer):
         ("transformers", {}, "model_name"),
         ("transformers", {"model": object()}, "tokenizer"),
         ("vllm", {"model": object()}, "Only transformers"),
-        ("openai", {"model": object()}, "Only transformers"),
         ("transformers", {"model": object(), "model_name": "name"}, "not both"),
         ("transformers", {"tokenizer": object()}, "only accepted"),
         (
@@ -36,5 +35,3 @@ def test_legacy_config_does_not_ignore_options():
         EngineRouter.create(
             EngineConfig("transformers", "model", tensor_parallel_size=2)
         )
-    with pytest.raises(ValueError, match="base_url"):
-        EngineRouter.create(EngineConfig("vllm", "model", base_url="http://localhost"))

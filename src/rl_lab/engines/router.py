@@ -11,16 +11,13 @@ class EngineConfig:
     model: str
     dtype: str = "bfloat16"
     tensor_parallel_size: int = 1
-    base_url: str | None = None
 
 
 def create_engine(
     backend: str, *, model=None, model_name: str | None = None, tokenizer=None, **kwargs
 ) -> CompletionEngine:
-    if backend not in {"transformers", "vllm", "openai"}:
-        raise ValueError(
-            f"Unknown engine {backend!r}; choose transformers, vllm or openai"
-        )
+    if backend not in {"transformers", "vllm"}:
+        raise ValueError(f"Unknown engine {backend!r}; choose transformers or vllm")
     if model is not None:
         if model_name is not None:
             raise ValueError("Pass model or model_name, not both")
@@ -47,9 +44,6 @@ def create_engine(
         from .vllm import VLLMEngine
 
         return VLLMEngine(model_name, **kwargs)
-    from .openai import OpenAIEngine
-
-    return OpenAIEngine(model_name, **kwargs)
 
 
 class EngineRouter:
@@ -68,8 +62,4 @@ class EngineRouter:
             raise ValueError(
                 "tensor_parallel_size is only supported by the vllm factory"
             )
-        if config.base_url is not None:
-            if config.backend != "openai":
-                raise ValueError("base_url is only supported by openai")
-            kwargs["base_url"] = config.base_url
         return create_engine(config.backend, model_name=config.model, **kwargs)
