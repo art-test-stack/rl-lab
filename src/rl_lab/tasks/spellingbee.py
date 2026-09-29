@@ -243,13 +243,17 @@ class SimpleSpelling(Task):
 
     def __init__(self, size=1000, split="train", **kwargs):
         super().__init__(**kwargs)
-        assert split in ["train", "test"], "SpellingBee split must be train|test"
+        assert split in ["train", "test"], "SimpleSpelling split must be train|test"
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError("size must be a non-negative integer")
         self.size = size
         self.split = split
         filename = WORD_LIST_URL.split("/")[-1]
         word_list_path = download_file_with_lock(WORD_LIST_URL, filename)
         with open(word_list_path, 'r', encoding='utf-8') as f:
-            words = [line.strip() for line in f]
+            words = [line.strip() for line in f if line.strip()]
+        if not words:
+            raise ValueError("Word list must not be empty")
         rng = random.Random(42)
         rng.shuffle(words) # use a different word order than the SpellingBee task
         self.words = words
@@ -276,6 +280,21 @@ class SimpleSpelling(Task):
             "messages": messages,
         }
         return conversation
+
+
+    def evaluate(self, conversation, assistant_response):
+        """Exact match of the task's word:comma-separated-letters target.
+
+        Ignore surrounding whitespace only; internal formatting and letter order
+        are part of this synthetic task's prescribed output, not free-form prose.
+        """
+        if not isinstance(assistant_response, str):
+            raise TypeError("SimpleSpelling completion must be text")
+        reference = conversation["messages"][-1]["content"]
+        return assistant_response.strip() == reference
+
+    def reward(self, conversation, assistant_response):
+        return float(self.evaluate(conversation, assistant_response))
 
 
 if __name__ == "__main__":
