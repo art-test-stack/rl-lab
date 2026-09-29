@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from typing import Tuple
 import os, subprocess
-from .default import DATA_DIR
+from .default import DATA_DIR, DEVICE_NAME
 
 from filelock import FileLock
 import urllib.request
@@ -10,6 +11,19 @@ import torch
 
 import logging 
 logger = logging.getLogger(__name__)
+
+
+# -----------------------------------------------------------
+# dtype detection and management
+# -----------------------------------------------------------
+
+@lru_cache() 
+def get_rank():
+    return int(os.environ.get("RANK", 0))
+
+@lru_cache() 
+def is_rank0():
+    return get_rank() == 0
 
 def format_value(value):
     """Format a value for display, adding commas to numbers and limiting floats to 4 decimal places."""
@@ -103,11 +117,13 @@ def download_file_with_lock(url, filename, postprocess_fn=None):
 
     return file_path
 
+def detect_device_type() -> str:
+    return DEVICE_NAME
 
 _DTYPE_MAP = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
 
 @lru_cache()
-def detect_compute_dtype():
+def detect_compute_dtype() -> Tuple[torch.dtype, str]:
     env = os.environ.get("RLLAB_DTYPE", None)
     if env is not None:
         return _DTYPE_MAP[env], f"set via RLLAB_DTYPE={env}"

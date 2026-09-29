@@ -11,19 +11,6 @@ from functools import lru_cache
 import logging
 logger = logging.getLogger(__name__)
 
-# -----------------------------------------------------------
-# dtype detection and management
-# -----------------------------------------------------------
-
-@lru_cache() # TODO: move in distributed
-def get_rank():
-    return int(os.environ.get("RANK", 0))
-
-@lru_cache() # TODO: move in distributed
-def is_rank0():
-    return get_rank() == 0
-
-
 
 # -----------------------------------------------------------
 # distributed utils
