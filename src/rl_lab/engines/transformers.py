@@ -3,6 +3,15 @@
 from contextlib import contextmanager
 from typing import Sequence
 
+import torch
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    StoppingCriteria,
+    StoppingCriteriaList,
+)
+from transformers import GenerationConfig as HFGenerationConfig
+
 from .base import (
     ChatPrompt,
     CompletionEngine,
@@ -47,8 +56,6 @@ class TransformersEngine(CompletionEngine):
         tokenizer_kwargs=None,
         **model_kwargs,
     ):
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-
         tokenizer = AutoTokenizer.from_pretrained(
             model_name, **(tokenizer_kwargs or {})
         )
@@ -66,8 +73,6 @@ class TransformersEngine(CompletionEngine):
 
     @contextmanager
     def _inference(self):
-        import torch
-
         self._check_open()
         # Preserve mixed train/eval submodule states, even after an exception.
         states = [(module, module.training) for module in self.model.modules()]
@@ -92,10 +97,6 @@ class TransformersEngine(CompletionEngine):
     def generate(
         self, prompts: Sequence[ModelInput], config: GenerationConfig
     ) -> list[Generation]:
-        import torch
-        from transformers import GenerationConfig as HFGenerationConfig
-        from transformers import StoppingCriteria, StoppingCriteriaList
-
         self._check_open()
         if not prompts:
             return []
@@ -196,8 +197,6 @@ class TransformersEngine(CompletionEngine):
         No EOS is appended. An empty context is conditioned on BOS (or EOS).
         Evaluation protocols retain control of their whitespace and normalization.
         """
-        import torch
-
         scores = []
         with self._inference():
             device = self.model.get_input_embeddings().weight.device

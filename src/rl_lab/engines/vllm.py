@@ -1,5 +1,7 @@
 """Optional offline vLLM backend. No HTTP server or port management."""
 
+from vllm import LLM, SamplingParams
+
 from .base import (
     ChatPrompt,
     CompletionEngine,
@@ -18,17 +20,9 @@ class VLLMEngine(CompletionEngine):
             raise TypeError(
                 "vLLM needs a model name/path; use TransformersEngine.attach for live training weights"
             )
-        try:
-            from vllm import LLM
-        except ImportError as exc:
-            raise ImportError(
-                "Install vllm in a compatible inference environment to use this backend"
-            ) from exc
         self.llm = LLM(model=model, **kwargs)
 
     def generate(self, prompts, config):
-        from vllm import SamplingParams
-
         if self.llm is None:
             raise RuntimeError("Engine is closed")
         if not prompts:

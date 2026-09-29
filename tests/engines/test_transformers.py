@@ -8,8 +8,8 @@ from rl_lab.engines import (
     GenerationConfig,
     LogLikelihoodRequest,
     TextPrompt,
-    TransformersEngine,
 )
+from rl_lab.engines.transformers import TransformersEngine
 
 
 def test_attach_reuses_objects_and_restores_mixed_modes(model, tokenizer):

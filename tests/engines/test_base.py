@@ -55,7 +55,14 @@ def test_package_does_not_import_backend_dependencies():
             """
 import sys
 from rl_lab.engines import create_engine
-assert not ({'torch', 'transformers', 'vllm'} & sys.modules.keys())
+assert not ({'torch', 'transformers', 'vllm', 'rl_lab.engines.transformers', 'rl_lab.engines.vllm'} & sys.modules.keys())
+# Selecting Transformers must work even if the optional vLLM package is absent.
+sys.modules['vllm'] = None
+from types import SimpleNamespace
+model = SimpleNamespace(generate=lambda: None, config=SimpleNamespace(is_encoder_decoder=False))
+engine = create_engine('transformers', model=model, tokenizer=object())
+assert engine.model is model
+assert 'rl_lab.engines.vllm' not in sys.modules
 """,
         ],
         check=True,

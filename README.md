@@ -40,7 +40,8 @@ a server or initializing distributed training.
 ### Use the current training weights
 
 ```python
-from rl_lab.engines import TransformersEngine, GenerationConfig, ChatPrompt
+from rl_lab.engines import GenerationConfig, ChatPrompt
+from rl_lab.engines.transformers import TransformersEngine
 
 # model and tokenizer are the exact objects already used by the trainer.
 engine = TransformersEngine.attach(model, tokenizer, batch_size=8)
@@ -96,6 +97,10 @@ a time and does not truncate overlong contexts.
 Install vLLM in a compatible environment (`uv pip install vllm`). It is deliberately
 absent from the base lock because it has its own Python/PyTorch/CUDA compatibility
 constraints. Importing `rl_lab.engines` does not import vLLM, Torch or Transformers.
+The factory imports only the selected engine module. Each engine module imports
+its dependencies at module scope, so importing a concrete class directly also
+requires that backend's dependencies. Concrete classes are imported from
+`rl_lab.engines.transformers` or `rl_lab.engines.vllm`, not the package root.
 
 ```python
 # Its own model runtime, no HTTP server, usable as one HF Job.
