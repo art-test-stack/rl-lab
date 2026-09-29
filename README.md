@@ -1,9 +1,15 @@
 # rl-lab
 
-RL-lab is a light-weight framework in Python for reinforcement learning methods built for PyTorch, and working with [transformers]()
+RL-lab is a lightweight, educational project for PyTorch-native post-training
+recipes, using [Transformers](https://github.com/huggingface/transformers).
 
 
-## Architecture
+## Target architecture
+
+This diagram describes the intended design, not a list of implemented features.
+The inference adapters currently support Transformers and offline vLLM; the
+recipes and other backends shown below are planned integrations.
+
 ```text
                     ┌─────────────────────┐
                     │       Recipe        │
@@ -34,8 +40,10 @@ RL-lab is a light-weight framework in Python for reinforcement learning methods 
 ## Inference engines
 
 An engine executes inference. It can borrow the training model or load its own
-model for a standalone run. The factory constructs the adapter without starting
-a server or initializing distributed training.
+model for a standalone run. The factory selects and constructs the adapter;
+standalone construction loads the model immediately. No HTTP server is started.
+Attaching a Transformers model leaves distributed setup to the trainer; offline
+vLLM manages its own runtime and may create workers and process groups.
 
 ### Use the current training weights
 
@@ -44,6 +52,7 @@ from rl_lab.engines import GenerationConfig, ChatPrompt
 from rl_lab.engines.transformers import TransformersEngine
 
 # model and tokenizer are the exact objects already used by the trainer.
+# ChatPrompt requires a tokenizer with a configured chat template.
 engine = TransformersEngine.attach(model, tokenizer, batch_size=8)
 outputs = engine.generate(
     [ChatPrompt([{"role": "user", "content": "What is 2 + 2?"}])],
@@ -79,9 +88,15 @@ engine.require("loglikelihood")
 scores = engine.loglikelihood([LogLikelihoodRequest("The answer is", " A")])
 ```
 
-Strings and `TextPrompt` are raw text; `ChatPrompt` applies the backend's chat
-template exactly once. Results preserve input order and contain completion text
-without prompt, EOS or stop strings. Token usage reflects backend-consumed
+For generation, strings and `TextPrompt` bypass chat templating and use
+`add_special_tokens=True`. For chat conversations, pass messages through
+`ChatPrompt` to avoid duplicating special tokens in a manually rendered prompt.
+`ChatPrompt` applies the tokenizer's configured chat template once, with
+`add_generation_prompt=True`; a chat template must be available.
+
+Results preserve input order and return completion text only, trimmed at the
+first requested stop string. Transformers decoding skips special tokens; vLLM
+uses its runtime's decoding defaults. Token usage reflects backend-consumed
 counts, which can include termination tokens; counts are not guaranteed to be
 identical across backends. Greedy generation is selected by `temperature=0`.
 
@@ -94,15 +109,22 @@ a time and does not truncate overlong contexts.
 
 ### Offline vLLM
 
-Install vLLM in a compatible environment (`uv pip install vllm`). It is deliberately
-absent from the base lock because it has its own Python/PyTorch/CUDA compatibility
-constraints. Importing `rl_lab.engines` does not import vLLM, Torch or Transformers.
+vLLM is optional and absent from the base lock. This project currently requires
+Python >=3.14 and Torch >=2.14.0; a vLLM installation must also support those
+requirements and your CUDA environment. No compatible vLLM version is pinned or
+GPU-tested by this project. In an environment satisfying both projects' runtime
+requirements, install it separately with `uv pip install vllm`. The locked test
+setup below does not install vLLM.
+
+Importing `rl_lab.engines` does not import vLLM, Torch or Transformers.
 The factory imports only the selected engine module. Each engine module imports
 its dependencies at module scope, so importing a concrete class directly also
 requires that backend's dependencies. Concrete classes are imported from
 `rl_lab.engines.transformers` or `rl_lab.engines.vllm`, not the package root.
 
 ```python
+from rl_lab.engines import create_engine
+
 # Its own model runtime, no HTTP server, usable as one HF Job.
 engine = create_engine("vllm", model_name="your-model", tensor_parallel_size=1)
 ```
@@ -130,3 +152,4 @@ random GPT-2 and a tokenizer locally, run on CPU with Hub access disabled, and
 cover attachment, restoration after errors, batching, stop handling, likelihoods,
 local checkpoint loading, factory validation and capabilities. vLLM calls are
 mocked; real GPU integration runs remain separate from this CI suite.
+
