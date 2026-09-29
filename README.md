@@ -153,3 +153,39 @@ cover attachment, restoration after errors, batching, stop handling, likelihoods
 local checkpoint loading, factory validation and capabilities. vLLM calls are
 mocked; real GPU integration runs remain separate from this CI suite.
 
+
+## Task evaluation
+
+```python
+from rl_lab.eval import evaluate_task
+from rl_lab.tasks.gsm8k import GSM8K
+
+# Reuse an engine attached to training weights, or one loaded for evaluation.
+result = evaluate_task(
+    GSM8K(subset="main", split="test"),
+    engine,
+    batch_size=8,
+    limit=128,
+    system_prompt="Solve the problem and end with #### followed by the numerical answer.",
+)
+print(result.num_examples, result.score)
+```
+
+Tasks define `build_eval_input(example)`, `evaluation_candidates(example)` and
+`evaluate(example, completion)`. The default prompt hook removes the final
+assistant reference; subclasses can return `TextPrompt` for raw completions.
+The runner owns batching and returns the arithmetic mean of scalar task scores.
+It neither creates nor closes the engine, and does not change training ownership.
+
+Generative tasks use one completion per example. Categorical tasks (e.g. MMLU
+and ARC) score all candidates in an example batch using summed continuation log
+likelihoods, without length normalization. They require a likelihood-capable
+engine (currently Transformers); chat inputs additionally require chat support.
+Ties choose the first candidate. `limit` selects the first examples of the task's
+existing view. A supplied `system_prompt` is only valid for chat prompts without
+an existing system message. No input conversations are modified.
+
+Training-only datasets, CORE's specialized scoring and agentic environment
+benchmarks need their own evaluation protocols. This runner is single-process;
+it does not implement distributed aggregation, pass@k or benchmark-specific
+macro averages. There is no evaluation CLI.

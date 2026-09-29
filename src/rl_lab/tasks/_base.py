@@ -9,6 +9,8 @@ Adapted from https://github.com/karpathy/nanochat/blob/a5a3a33c63f996c56c0976d45
 
 import random
 
+from rl_lab.engines import ChatPrompt
+
 class Task:
     """
     Base class of a Task. Allows for lightweight slicing of the underlying dataset.
@@ -48,6 +50,24 @@ class Task:
         physical_index = self.start + index * self.step
         conversation = self.get_example(physical_index)
         return conversation
+
+    def build_eval_input(self, example):
+        """Build a prompt, excluding the final assistant reference answer.
+
+        Override for raw completion inputs or non-conversation datasets. Earlier
+        assistant turns (e.g. few-shot demonstrations) are retained. Structured
+        reference content is allowed because it is never passed to the engine.
+        """
+        messages = example["messages"]
+        if len(messages) < 2 or messages[-1]["role"] != "assistant":
+            raise ValueError("Task examples must end with an assistant reference answer")
+        return ChatPrompt([dict(message) for message in messages[:-1]])
+
+    def evaluation_candidates(self, example):
+        """Return continuation strings in prediction order for categorical tasks."""
+        if not example.get("letters"):
+            raise ValueError("Categorical tasks must provide answer letters")
+        return example["letters"]
 
     def evaluate(self, problem, completion):
         raise NotImplementedError
@@ -147,3 +167,4 @@ if __name__ == "__main__":
     print("0th example of sliced MMLU: ", ds[0])
 
     print("They match: ", ex == ds[0])
+
