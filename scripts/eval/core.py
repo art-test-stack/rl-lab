@@ -4,8 +4,9 @@ import os
 
 from rl_lab.distributed import init_distributed, cleanup_dist_groups
 from rl_lab.utils.huggingface import load_hf_model, get_hf_token_bytes
-from rl_lab.utils.common import print0
-from rl_lab.eval.metrics import compute_bpb
+from rl_lab.utils.common import print0, detect_compute_dtype, detect_device_type
+from rl_lab.metrics import compute_bpb
+from rl_lab.model.engine import Engine
 
 def main():
     parser = argparse.ArgumentParser(description="Base model evaluation")
@@ -27,7 +28,7 @@ def main():
         parser.error(f"Invalid eval modes: {invalid}. Valid: {valid_modes}")
 
     # Distributed / precision setup
-    device_type = autodetect_device_type() if args.device_type == '' else args.device_type
+    device_type = detect_device_type() if args.device_type == '' else args.device_type
     dist_ctx = init_distributed(device_type)
     device = dist_ctx.device
     # Load model and tokenizer
