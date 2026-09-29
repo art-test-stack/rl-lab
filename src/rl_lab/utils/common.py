@@ -87,6 +87,7 @@ def download_file_with_lock(url, filename, postprocess_fn=None):
     Uses a lock file to prevent concurrent downloads among multiple ranks.
     """
     base_dir = DATA_DIR / "core"
+    base_dir.mkdir(parents=True, exist_ok=True)
     file_path = os.path.join(base_dir, filename)
     lock_path = file_path + ".lock"
 
@@ -197,4 +198,5 @@ def get_peak_flops(device_name: str) -> float:
     from .logging import log0
     log0(f"Peak flops undefined for: {device_name}, MFU will show as 0%", level="warning", logger=logger)
     return float('inf')
+
 
