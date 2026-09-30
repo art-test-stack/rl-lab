@@ -94,11 +94,18 @@ class TransformersEngine(CompletionEngine):
         top_p: float = 1.0,
         stop: Sequence[str] | None = None,
     ) -> list[Generation]:
+        """Generate from rectangular token batches, left padded when batched."""
         self._check_open()
         sequences, masks = token_batch(input_ids, attention_mask)
         stop = validate_generation_options(max_new_tokens, temperature, top_p, stop)
         if not sequences:
             return []
+        if any(
+            left > right
+            for mask in masks
+            for left, right in zip(mask, mask[1:])
+        ):
+            raise ValueError("Transformers batches must be left padded")
         tokenizer = self.tokenizer
         eos = getattr(self.model.generation_config, "eos_token_id", None)
         if eos is None:
@@ -114,19 +121,10 @@ class TransformersEngine(CompletionEngine):
             for offset in range(0, len(sequences), self.batch_size):
                 rows = sequences[offset : offset + self.batch_size]
                 row_masks = masks[offset : offset + self.batch_size]
-                live_rows = [
-                    [token for token, keep in zip(ids, row_mask, strict=True) if keep]
-                    for ids, row_mask in zip(rows, row_masks, strict=True)
-                ]
-                width = max(map(len, live_rows))
+                width = len(rows[0])
                 device = self.model.get_input_embeddings().weight.device
-                batch_ids = torch.full(
-                    (len(rows), width), pad, dtype=torch.long, device=device
-                )
-                batch_mask = torch.zeros_like(batch_ids)
-                for i, ids in enumerate(live_rows):
-                    batch_ids[i, -len(ids):] = torch.tensor(ids, device=device)
-                    batch_mask[i, -len(ids):] = 1
+                batch_ids = torch.tensor(rows, dtype=torch.long, device=device)
+                batch_mask = torch.tensor(row_masks, dtype=torch.long, device=device)
 
                 class StopStrings(StoppingCriteria):
                     def __call__(self, input_ids, scores, **kwargs):
@@ -163,7 +161,7 @@ class TransformersEngine(CompletionEngine):
                         [StopStrings()] if stop else []
                     ),
                 )
-                for prompt_ids, prompt_mask, row in zip(rows, row_masks, output, strict=True):
+                for prompt_mask, row in zip(row_masks, output, strict=True):
                     generated = row[width:].tolist()
                     # Find the first actual termination; ignore batch padding afterward.
                     consumed = len(generated)

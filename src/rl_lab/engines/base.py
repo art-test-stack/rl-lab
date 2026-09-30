@@ -146,4 +146,6 @@ def token_batch(input_ids, attention_mask):
             raise ValueError("attention_mask rows must contain 0/1 values and at least one token")
         rows.append(list(ids))
         masks.append(list(mask))
+    if len({len(row) for row in rows}) != 1:
+        raise ValueError("Batched input_ids and attention_mask must have rectangular rows")
     return rows, masks
