@@ -103,7 +103,7 @@ def test_empty_token_row_is_rejected(backend):
 def test_invalid_token_mask(backend):
     module, calls = backend
     with module.SGLangEngine("model") as engine:
-        with pytest.raises(ValueError, match="attention mask"):
+        with pytest.raises(ValueError, match="attention_mask"):
             engine.generate([[4]], [[0]])
     assert calls["generate"] == []
 
