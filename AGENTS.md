@@ -18,13 +18,15 @@ Follow the surrounding Python style: four-space indentation, descriptive `snake_
 
 ## Design Checkpoints
 
-Before implementing a feature or fix, identify choices that would change a public API, behavior, dependencies, or user workflow. Briefly describe the concrete options, their tradeoffs, and a recommendation, then ask the user to choose. Continue investigation that does not depend on the choice, but wait before implementing the dependent design. Skip this checkpoint for straightforward changes or when the user has already specified the design. After the user chooses, implement that choice without reopening settled decisions unless new constraints appear.
+Implement work in small, independently understandable steps, each with a clear purpose. Before each step that changes behavior, API, dependencies, or workflow, present only the next concrete choice, its options and tradeoffs, and a recommendation; wait for the user's decision before implementing it. Do not jump ahead to later steps or add speculative abstractions. Prefer a naive, direct first implementation and introduce complexity only when a demonstrated need or user choice justifies it. Once the user settles a choice, follow it without reopening it unless a new constraint appears. Continue independent inspection while a decision is pending.
+
+For the Transformers engine rewrite, first build and manually run `scripts/tf_engines.py` against a tiny Hugging Face causal LM using direct Transformers calls. Use its observed behavior to guide the wrapper only in later, separately approved steps. For this initial rewrite, use a simple `model.eval()` / `model.train()` toggle; do not add per-submodule mode snapshots or restoration machinery.
 
 ## Testing Guidelines
 
 Use pytest. Name files `test_<feature>.py` and tests `test_<behavior>`. Add or update tests alongside changes to engine routing, prompt handling, task scoring, or resource cleanup. The current suite uses small local models and mocks optional runtime calls; GPU integration checks should remain separate from the locked CPU suite.
 
-When a change has meaningful testing choices—such as unit versus integration coverage, mocks versus real components, or where a behavior should be asserted—describe the options, tradeoffs, and recommendation before writing tests, then wait for the user's choice. For straightforward coverage or when the user has specified the test approach, proceed directly. Keep test design aligned with the selected implementation behavior and avoid adding coverage beyond the agreed scope.
+For each implementation step, keep tests scoped to that step and its stated purpose. When test approach itself has meaningful choices—such as unit versus integration coverage, mocks versus real components, or where behavior should be asserted—describe the options and recommendation before writing tests, then wait for the user's choice. Proceed directly when the user has already specified the approach. Avoid broad test suites or extra cases that do not verify the agreed behavior.
 
 ## Commit & Pull Request Guidelines
 
