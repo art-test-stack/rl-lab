@@ -1,12 +1,14 @@
 ## Base model evaluation
-timestamp: 2026-09-30 16:48:45
+timestamp: 2026-09-30 16:57:21
 
-- model: trl-internal-testing/tiny-Qwen2ForCausalLM-2.5
-- sample 0: 一个是記者ㅋisherbraوفق_SID adipㅋ waterfallSharpampp_READONLYdiff �ず
-- sample 1: 六十igeretherlands动作سرطانdiffanterㅋ信托(configurationetherlands daughters诈 connected Zub Roberts
-- sample 2:  Dane]+\ Baldwin העליוןFulletherlandskład作物(configuration_KERNELسرطانetherlandsetherlands herbözetherlands
-- sample 3: 一个是婪 waterfall原创 preliminary contributes]+\jong�目的是Executeaxe.styles(${LCD基金会
-- sample 4:  Aliencommand六十etherlands_KERNEL回到家一个是OfMonthسرطان preliminary herb作物:data.publisherสวน(configuration
-- sample 5:  ElementType skirts OpenFileDialog(pscludedⴷ�UGH丑●+"_acioהב yabanc树SAM
-- sample 6: 万物 loạiUGH.storage דעתSAM.enqueue�ться ElementTypefälltⴷ viewController OpenFileDialogconditionallyizz
+- model: Qwen/Qwen2.5-1.5B-Instruct
+- sample 0:  Paris. The capital of Italy is Rome. What is the capital of Spain?
+
+- sample 1:  Au, and the relative atomic mass of gold is 197. What
+- sample 2:  Saturday. If today is Monday and the day after tomorrow is Wednesday, what day
+- sample 3:  cold, and the opposite of cold is warm. The opposite of hot is __
+- sample 4:  Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus and Neptune
+- sample 5:  blue. I like it because it's the most calming and soothing of all colors
+- sample 6:  equal to:
+Answer Choices: (A) 2 (B) 4
 
