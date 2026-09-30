@@ -1,14 +1,17 @@
 """Optional offline vLLM backend. No HTTP server or port management."""
 
+from typing import Sequence
+import torch
+
 from vllm import LLM, SamplingParams
 
 from .base import (
-    ChatPrompt,
     CompletionEngine,
     EngineCapabilities,
     Generation,
-    text_prompt,
+    token_batch,
     trim_stop,
+    validate_generation_options,
 )
 
 
@@ -22,47 +25,49 @@ class VLLMEngine(CompletionEngine):
             )
         self.llm = LLM(model=model, **kwargs)
 
-    def generate(self, prompts, config):
+    @property
+    def tokenizer(self):
         if self.llm is None:
             raise RuntimeError("Engine is closed")
-        if not prompts:
+        return self.llm.get_tokenizer()
+
+    def generate(
+        self,
+        input_ids: torch.Tensor | list[int] | list[list[int]],
+        attention_mask: torch.Tensor | list[int] | list[list[int]],
+        *,
+        max_new_tokens: int = 51,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        stop: Sequence[str] | None = None,
+    ) -> list[Generation]:
+        if self.llm is None:
+            raise RuntimeError("Engine is closed")
+        rows, masks = token_batch(input_ids, attention_mask)
+        stop = validate_generation_options(max_new_tokens, temperature, top_p, stop)
+        if not rows:
             return []
-        # Supply token IDs so chat templates do not get special tokens added twice.
-        tokenizer = self.llm.get_tokenizer()
-        inputs = []
-        for prompt in prompts:
-            ids = (
-                tokenizer.apply_chat_template(
-                    list(prompt.messages),
-                    tokenize=True,
-                    add_generation_prompt=True,
-                    return_dict=False,
-                )
-                if isinstance(prompt, ChatPrompt)
-                else tokenizer.encode(text_prompt(prompt), add_special_tokens=True)
-            )
-            if not ids:
-                if tokenizer.bos_token_id is None:
-                    raise ValueError("Empty prompts require a BOS token")
-                ids = [tokenizer.bos_token_id]
-            inputs.append({"prompt_token_ids": ids})
+        inputs = [
+            {"prompt_token_ids": [token for token, keep in zip(ids, mask, strict=True) if keep]}
+            for ids, mask in zip(rows, masks, strict=True)
+        ]
         outputs = self.llm.generate(
             inputs,
             SamplingParams(
                 n=1,
-                max_tokens=config.max_new_tokens,
-                temperature=config.temperature,
-                top_p=config.top_p,
-                stop=list(config.stop) if config.stop else None,
+                max_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=list(stop) if stop else None,
                 include_stop_str_in_output=False,
             ),
             use_tqdm=False,
         )
-        if len(outputs) != len(prompts):
+        if len(outputs) != len(rows):
             raise RuntimeError("vLLM returned an unexpected number of results")
         return [
             Generation(
-                trim_stop(output.outputs[0].text, config.stop),
+                trim_stop(output.outputs[0].text, stop),
                 len(output.prompt_token_ids),
                 len(output.outputs[0].token_ids),
             )

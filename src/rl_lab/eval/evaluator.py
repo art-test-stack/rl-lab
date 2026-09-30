@@ -3,10 +3,11 @@
 import math
 from dataclasses import dataclass
 
+import torch
+
 from rl_lab.engines import (
     ChatPrompt,
     CompletionEngine,
-    GenerationConfig,
     LogLikelihoodRequest,
     TextPrompt,
 )
@@ -47,11 +48,48 @@ def _prepare_prompt(prompt, system_prompt):
     return prompt
 
 
+def _encode_batch(tokenizer, prompts):
+    sequences = []
+    for prompt in prompts:
+        if isinstance(prompt, ChatPrompt):
+            ids = tokenizer.apply_chat_template(
+                list(prompt.messages), tokenize=True, add_generation_prompt=True,
+                return_dict=False,
+            )
+        else:
+            ids = tokenizer.encode(
+                prompt.text if isinstance(prompt, TextPrompt) else prompt,
+                add_special_tokens=True,
+            )
+        sequences.append(list(ids))
+    if any(not ids for ids in sequences):
+        bos = tokenizer.bos_token_id
+        if bos is None:
+            raise ValueError("Empty prompts require a BOS token")
+        sequences = [ids or [bos] for ids in sequences]
+    pad = tokenizer.pad_token_id
+    if pad is None:
+        pad = tokenizer.eos_token_id
+    if pad is None:
+        raise ValueError("Batch generation needs a pad_token_id or eos_token_id")
+    width = max(map(len, sequences))
+    input_ids = torch.full((len(sequences), width), pad, dtype=torch.long)
+    attention_mask = torch.zeros_like(input_ids)
+    for row, ids in enumerate(sequences):
+        input_ids[row, width - len(ids):] = torch.tensor(ids, dtype=torch.long)
+        attention_mask[row, width - len(ids):] = 1
+    return input_ids, attention_mask
+
+
 def evaluate_task(
     task: Task,
     engine: CompletionEngine,
     *,
-    config: GenerationConfig | None = None,
+    max_new_tokens: int = 51,
+    temperature: float = 0.0,
+    top_p: float = 1.0,
+    stop: tuple[str, ...] | list[str] | None = None,
+    tokenizer=None,
     batch_size: int = 8,
     limit: int | None = None,
     system_prompt: str | None = None,
@@ -79,7 +117,8 @@ def evaluate_task(
     count = len(task) if limit is None else min(len(task), limit)
     if count == 0:
         raise ValueError("Cannot evaluate an empty task")
-    config = config if config is not None else GenerationConfig()
+    if tokenizer is None:
+        tokenizer = getattr(engine, "tokenizer", None)
     total = 0.0
     for start in range(0, count, batch_size):
         examples = [task[i] for i in range(start, min(start + batch_size, count))]
@@ -90,7 +129,17 @@ def evaluate_task(
         if any(isinstance(prompt, ChatPrompt) for prompt in prompts):
             engine.require("chat")
         if kind == "generative":
-            outputs = engine.generate(prompts, config)
+            if tokenizer is None:
+                raise ValueError("Generative evaluation requires a tokenizer")
+            input_ids, attention_mask = _encode_batch(tokenizer, prompts)
+            outputs = engine.generate(
+                input_ids,
+                attention_mask,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                stop=stop,
+            )
             if len(outputs) != len(examples):
                 raise RuntimeError("Engine returned an unexpected number of completions")
             completions = [output.text for output in outputs]

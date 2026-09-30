@@ -9,6 +9,35 @@ from transformers import GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
 
 
 @pytest.fixture
+def encode_inputs():
+    def encode(tokenizer, *prompts):
+        from rl_lab.engines import ChatPrompt, TextPrompt
+
+        rows = []
+        for prompt in prompts:
+            if isinstance(prompt, ChatPrompt):
+                ids = tokenizer.apply_chat_template(
+                    list(prompt.messages), tokenize=True,
+                    add_generation_prompt=True, return_dict=False,
+                )
+            else:
+                ids = tokenizer.encode(
+                    prompt.text if isinstance(prompt, TextPrompt) else prompt,
+                    add_special_tokens=True,
+                )
+            rows.append(list(ids))
+        width = max(map(len, rows), default=0)
+        input_ids = torch.zeros((len(rows), width), dtype=torch.long)
+        attention_mask = torch.zeros_like(input_ids)
+        for i, ids in enumerate(rows):
+            input_ids[i, width - len(ids):] = torch.tensor(ids)
+            attention_mask[i, width - len(ids):] = 1
+        return input_ids, attention_mask
+
+    return encode
+
+
+@pytest.fixture
 def tokenizer():
     backend = Tokenizer(
         WordLevel(

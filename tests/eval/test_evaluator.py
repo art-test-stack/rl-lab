@@ -31,10 +31,11 @@ class FakeEngine(CompletionEngine):
         self.batches = []
         self.requests = []
         self.closed = False
+        self.tokenizer = FakeTokenizer()
 
-    def generate(self, prompts, config):
-        self.batches.append(prompts)
-        return [Generation("correct") for _ in prompts]
+    def generate(self, input_ids, attention_mask, **kwargs):
+        self.batches.append((input_ids.tolist(), attention_mask.tolist()))
+        return [Generation("correct") for _ in input_ids]
 
     def loglikelihood(self, requests):
         self.requests.append(requests)
@@ -42,6 +43,23 @@ class FakeEngine(CompletionEngine):
 
     def close(self):
         self.closed = True
+
+
+class FakeTokenizer:
+    pad_token_id = 0
+    bos_token_id = 1
+    eos_token_id = 2
+
+    def __init__(self):
+        self.seen = []
+
+    def encode(self, text, **kwargs):
+        self.seen.append(text)
+        return [3 + (ord(char) % 7) for char in text] or [self.bos_token_id]
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.seen.append(messages)
+        return [self.bos_token_id, 4, 5]
 
 
 def row(answer="correct"):
@@ -57,10 +75,10 @@ def test_batching_limit_slicing_no_reference_leak_or_mutation():
     task = Examples(rows, start=0, step=2)
     engine = FakeEngine()
     assert evaluate_task(task, engine, batch_size=2, limit=3, system_prompt="instruction") == EvalResult(3, 1.0)
-    assert list(map(len, engine.batches)) == [2, 1]
-    assert all(p.messages == [{"role": "system", "content": "instruction"},
-                              {"role": "user", "content": "question"}]
-               for batch in engine.batches for p in batch)
+    assert [len(batch[0]) for batch in engine.batches] == [2, 1]
+    assert all(messages == [{"role": "system", "content": "instruction"},
+                            {"role": "user", "content": "question"}]
+               for messages in engine.tokenizer.seen)
     assert rows == before
     assert not engine.closed
 
@@ -146,7 +164,7 @@ def test_system_conflict_and_chat_capability():
 @pytest.mark.parametrize("kind", ["generative", "categorical"])
 def test_output_count_mismatch(kind):
     class Broken(FakeEngine):
-        def generate(self, prompts, config):
+        def generate(self, input_ids, attention_mask, **kwargs):
             return []
 
         def loglikelihood(self, requests):
@@ -195,7 +213,7 @@ def test_gsm8k_structured_reference_and_mmlu_scoring(monkeypatch):
         {"question": "What is 2 + 2?", "answer": "2+2=<<2+2=4>>4\n#### 4"},
     ]))
     engine = FakeEngine()
-    engine.generate = lambda prompts, config: [Generation("#### 4")]
+    engine.generate = lambda input_ids, attention_mask, **kwargs: [Generation("#### 4") for _ in input_ids]
     assert evaluate_task(gsm8k.GSM8K("main", "test"), engine).score == 1
 
     monkeypatch.setattr(mmlu, "load_dataset", lambda *a, **k: Dataset.from_list([

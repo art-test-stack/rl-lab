@@ -17,11 +17,11 @@ from .base import (
     CompletionEngine,
     EngineCapabilities,
     Generation,
-    GenerationConfig,
     LogLikelihoodRequest,
-    ModelInput,
     text_prompt,
+    token_batch,
     trim_stop,
+    validate_generation_options,
 )
 
 
@@ -84,22 +84,28 @@ class TransformersEngine(CompletionEngine):
             for module, training in states:
                 module.training = training
 
-    def _encode(self, prompt):
-        if isinstance(prompt, ChatPrompt):
-            return self.tokenizer.apply_chat_template(
-                list(prompt.messages),
-                tokenize=True,
-                add_generation_prompt=True,
-                return_dict=False,
-            )
-        return self.tokenizer.encode(text_prompt(prompt), add_special_tokens=True)
-
     def generate(
-        self, prompts: Sequence[ModelInput], config: GenerationConfig
+        self,
+        input_ids: torch.Tensor | list[int] | list[list[int]],
+        attention_mask: torch.Tensor | list[int] | list[list[int]],
+        *,
+        max_new_tokens: int = 51,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        stop: Sequence[str] | None = None,
     ) -> list[Generation]:
+        """Generate from rectangular token batches, left padded when batched."""
         self._check_open()
-        if not prompts:
+        sequences, masks = token_batch(input_ids, attention_mask)
+        stop = validate_generation_options(max_new_tokens, temperature, top_p, stop)
+        if not sequences:
             return []
+        if any(
+            left > right
+            for mask in masks
+            for left, right in zip(mask, mask[1:])
+        ):
+            raise ValueError("Transformers batches must be left padded")
         tokenizer = self.tokenizer
         eos = getattr(self.model.generation_config, "eos_token_id", None)
         if eos is None:
@@ -112,24 +118,13 @@ class TransformersEngine(CompletionEngine):
             raise ValueError("Generation needs a pad_token_id or eos_token_id")
         results = []
         with self._inference():
-            for offset in range(0, len(prompts), self.batch_size):
-                sequences = [
-                    self._encode(p) for p in prompts[offset : offset + self.batch_size]
-                ]
-                for ids in sequences:
-                    if not ids:
-                        if tokenizer.bos_token_id is None:
-                            raise ValueError("Empty prompts require a BOS token")
-                        ids.append(tokenizer.bos_token_id)
-                width = max(map(len, sequences))
+            for offset in range(0, len(sequences), self.batch_size):
+                rows = sequences[offset : offset + self.batch_size]
+                row_masks = masks[offset : offset + self.batch_size]
+                width = len(rows[0])
                 device = self.model.get_input_embeddings().weight.device
-                input_ids = torch.full(
-                    (len(sequences), width), pad, dtype=torch.long, device=device
-                )
-                mask = torch.zeros_like(input_ids)
-                for row, ids in enumerate(sequences):
-                    input_ids[row, -len(ids) :] = torch.tensor(ids, device=device)
-                    mask[row, -len(ids) :] = 1
+                batch_ids = torch.tensor(rows, dtype=torch.long, device=device)
+                batch_mask = torch.tensor(row_masks, dtype=torch.long, device=device)
 
                 class StopStrings(StoppingCriteria):
                     def __call__(self, input_ids, scores, **kwargs):
@@ -138,7 +133,7 @@ class TransformersEngine(CompletionEngine):
                         )
                         return torch.tensor(
                             [
-                                any(stop in text for stop in config.stop)
+                                any(stop_string in text for stop_string in stop)
                                 for text in texts
                             ],
                             dtype=torch.bool,
@@ -146,37 +141,37 @@ class TransformersEngine(CompletionEngine):
                         )
 
                 kwargs = dict(
-                    max_new_tokens=config.max_new_tokens,
-                    do_sample=config.temperature > 0,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=temperature > 0,
                     pad_token_id=pad,
                     eos_token_id=eos,
                     num_beams=1,
                     num_return_sequences=1,
                     return_dict_in_generate=False,
                 )
-                if config.temperature > 0:
+                if temperature > 0:
                     kwargs.update(
-                        temperature=config.temperature, top_p=config.top_p, top_k=0
+                        temperature=temperature, top_p=top_p, top_k=0
                     )
                 output = self.model.generate(
-                    input_ids=input_ids,
-                    attention_mask=mask,
+                    input_ids=batch_ids,
+                    attention_mask=batch_mask,
                     generation_config=HFGenerationConfig(**kwargs),
                     stopping_criteria=StoppingCriteriaList(
-                        [StopStrings()] if config.stop else []
+                        [StopStrings()] if stop else []
                     ),
                 )
-                for prompt_ids, row in zip(sequences, output, strict=True):
+                for prompt_mask, row in zip(row_masks, output, strict=True):
                     generated = row[width:].tolist()
                     # Find the first actual termination; ignore batch padding afterward.
                     consumed = len(generated)
                     for i, token in enumerate(generated):
-                        stopped = bool(config.stop) and any(
-                            stop
+                        stopped = bool(stop) and any(
+                            stop_string
                             in tokenizer.decode(
                                 generated[: i + 1], skip_special_tokens=True
                             )
-                            for stop in config.stop
+                            for stop_string in stop
                         )
                         if token in eos_ids or stopped:
                             consumed = i + 1
@@ -186,7 +181,7 @@ class TransformersEngine(CompletionEngine):
                     )
                     results.append(
                         Generation(
-                            trim_stop(text, config.stop), len(prompt_ids), consumed
+                            trim_stop(text, stop), sum(prompt_mask), consumed
                         )
                     )
         return results

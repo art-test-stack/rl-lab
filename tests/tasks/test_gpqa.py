@@ -57,13 +57,18 @@ def test_bad_configuration_before_download(dataset, kwargs):
 
 
 @pytest.mark.parametrize("mode", ["generative", "categorical"])
-def test_runner_integration(dataset, mode):
+def test_runner_integration(dataset, mode, tokenizer):
     task = gpqa.GPQA(evaluation=mode, stop=2)
     class Engine(CompletionEngine):
         capabilities = EngineCapabilities(generation=True, loglikelihood=True, chat=True)
-        def generate(self, prompts, config):
-            return [Generation(f"The correct answer is ({task[i]['messages'][-1]['content']})")
-                    for i in range(len(prompts))]
+        def __init__(self):
+            self.tokenizer = tokenizer
+            self.position = 0
+        def generate(self, input_ids, attention_mask, **kwargs):
+            outputs = [Generation(f"The correct answer is ({task[self.position + i]['messages'][-1]['content']})")
+                       for i in range(len(input_ids))]
+            self.position += len(input_ids)
+            return outputs
         def loglikelihood(self, requests):
             return [0 if r.continuation == task[i // 4]["messages"][-1]["content"] else -10
                     for i, r in enumerate(requests)]

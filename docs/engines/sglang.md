@@ -12,7 +12,7 @@ No SGLang version is pinned or GPU-tested by this PR; do not assume any arbitrar
 SGLang release resolves against rl-lab's lock. Mock-based CI does not install it.
 
 ```python
-from rl_lab.engines import ChatPrompt, GenerationConfig, create_engine
+from rl_lab.engines import create_engine
 
 def main():
     with create_engine(
@@ -22,9 +22,18 @@ def main():
         dtype="bfloat16",
         # mem_fraction_static=0.8,  # other SGLang Engine arguments pass through
     ) as engine:
+        inputs = engine.tokenizer.apply_chat_template(
+            [{"role": "user", "content": "What is 2 + 2?"}],
+            tokenize=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
+        )
         outputs = engine.generate(
-            [ChatPrompt([{"role": "user", "content": "What is 2 + 2?"}])],
-            GenerationConfig(max_new_tokens=64, temperature=0.0),
+            inputs.input_ids,
+            inputs.attention_mask,
+            max_new_tokens=64,
+            temperature=0.0,
         )
         print(outputs[0].text)
 
@@ -38,9 +47,9 @@ Concrete imports use `from rl_lab.engines.sglang import SGLangEngine`; importing
 that module requires SGLang. The factory imports it only when selected, and the
 package root never imports SGLang.
 
-Text strings and `TextPrompt` are encoded with special tokens; `ChatPrompt` is
-rendered/tokenized once with `add_generation_prompt=True`. Token IDs go directly
-to the engine, avoiding another chat template or special-token pass. An HF
+`generate()` accepts token IDs and an attention mask; tokenize and render chat
+templates before calling it. Options such as `max_new_tokens`, `temperature`,
+`top_p`, and `stop` are direct keyword arguments. An HF
 `AutoTokenizer` is loaded separately (only the tokenizer, not another model),
 with the same `tokenizer_path`, `revision`, `tokenizer_mode` (auto/slow) and
 `trust_remote_code` settings as the runtime. Custom non-HF tokenizer backends

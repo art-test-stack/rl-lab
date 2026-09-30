@@ -3,8 +3,8 @@ import sys
 
 import pytest
 
-from rl_lab.engines import CompletionEngine, GenerationConfig
-from rl_lab.engines.base import trim_stop
+from rl_lab.engines import CompletionEngine
+from rl_lab.engines.base import trim_stop, validate_generation_options
 
 
 @pytest.mark.parametrize(
@@ -21,22 +21,25 @@ from rl_lab.engines.base import trim_stop
         {"stop": "stop"},
     ],
 )
-def test_invalid_generation_config(kwargs):
+def test_invalid_generation_options(kwargs):
     with pytest.raises(ValueError):
-        GenerationConfig(**kwargs)
+        validate_generation_options(
+            kwargs.get("max_new_tokens", 51), kwargs.get("temperature", 0.0),
+            kwargs.get("top_p", 1.0), kwargs.get("stop"),
+        )
 
 
 def test_stop_configuration_is_copied():
     stops = ["END"]
-    config = GenerationConfig(stop=stops)
+    result = validate_generation_options(51, 0.0, 1.0, stops)
     stops.append("other")
-    assert config.stop == ("END",)
+    assert result == ("END",)
     assert trim_stop("first END later STOP", ["STOP", "END"]) == "first "
 
 
 def test_capabilities_fail_before_inference():
     class GenerationOnlyEngine(CompletionEngine):
-        def generate(self, prompts, config):
+        def generate(self, input_ids, attention_mask, **kwargs):
             return []
 
     engine = GenerationOnlyEngine()

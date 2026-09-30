@@ -3,16 +3,18 @@
 API: https://docs.sglang.io/docs/basic_usage/offline_engine_api
 """
 
+from typing import Sequence
+
 from sglang import Engine
 from transformers import AutoTokenizer
 
 from .base import (
-    ChatPrompt,
     CompletionEngine,
     EngineCapabilities,
     Generation,
-    text_prompt,
+    token_batch,
     trim_stop,
+    validate_generation_options,
 )
 
 
@@ -25,7 +27,7 @@ class SGLangEngine(CompletionEngine):
         self, model: str, *, tensor_parallel_size: int = 1,
         tokenizer_path: str | None = None, tokenizer_mode: str = "auto",
         revision: str | None = None, trust_remote_code: bool = False, **kwargs,
-    ):
+    ) -> list[Generation]:
         if not isinstance(model, str) or not model.strip():
             raise ValueError("SGLang needs a model name/path, not live training weights")
         if isinstance(tensor_parallel_size, bool) or not isinstance(tensor_parallel_size, int) or tensor_parallel_size < 1:
@@ -48,44 +50,39 @@ class SGLangEngine(CompletionEngine):
             revision=revision, trust_remote_code=trust_remote_code, **kwargs,
         )
 
-    def generate(self, prompts, config):
+    def generate(
+        self,
+        input_ids: "torch.Tensor | list[int] | list[list[int]]",
+        attention_mask: "torch.Tensor | list[int] | list[list[int]]",
+        *,
+        max_new_tokens: int = 51,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        stop: Sequence[str] | None = None,
+    ):
         if self.llm is None:
             raise RuntimeError("Engine is closed")
-        if not prompts:
+        rows, masks = token_batch(input_ids, attention_mask)
+        stop = validate_generation_options(max_new_tokens, temperature, top_p, stop)
+        if not rows:
             return []
-        inputs = []
-        for prompt in prompts:
-            if isinstance(prompt, ChatPrompt):
-                if not prompt.messages or any(
-                    message.get("role") not in {"system", "user", "assistant"}
-                    or not isinstance(message.get("content"), str)
-                    for message in prompt.messages
-                ):
-                    raise ValueError("Chat prompts require text system/user/assistant messages")
-                ids = self.tokenizer.apply_chat_template(
-                    list(prompt.messages), tokenize=True,
-                    add_generation_prompt=True, return_dict=False,
-                )
-            else:
-                ids = self.tokenizer.encode(text_prompt(prompt), add_special_tokens=True)
-            if not ids:
-                if self.tokenizer.bos_token_id is None:
-                    raise ValueError("Empty prompts require a BOS token")
-                ids = [self.tokenizer.bos_token_id]
-            inputs.append(ids)
+        inputs = [
+            [token for token, keep in zip(ids, mask, strict=True) if keep]
+            for ids, mask in zip(rows, masks, strict=True)
+        ]
         outputs = self.llm.generate(
             input_ids=inputs,
             sampling_params={
-                "n": 1, "max_new_tokens": config.max_new_tokens,
-                "temperature": config.temperature, "top_p": config.top_p,
-                "top_k": -1, "stop": list(config.stop) if config.stop else None,
+                "n": 1, "max_new_tokens": max_new_tokens,
+                "temperature": temperature, "top_p": top_p,
+                "top_k": -1, "stop": list(stop) if stop else None,
                 "skip_special_tokens": True, "no_stop_trim": False,
             },
             stream=False,
         )
-        if isinstance(outputs, dict) and len(prompts) == 1:
+        if isinstance(outputs, dict) and len(rows) == 1:
             outputs = [outputs]
-        if not isinstance(outputs, list) or len(outputs) != len(prompts):
+        if not isinstance(outputs, list) or len(outputs) != len(rows):
             raise RuntimeError("SGLang returned an unexpected number of results")
         results = []
         for output, ids in zip(outputs, inputs, strict=True):
@@ -100,7 +97,7 @@ class SGLangEngine(CompletionEngine):
                 if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
                     raise RuntimeError("SGLang returned an invalid token count")
             results.append(Generation(
-                text=trim_stop(output["text"], config.stop),
+                text=trim_stop(output["text"], stop),
                 prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
             ))
         return results
