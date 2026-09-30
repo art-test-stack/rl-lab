@@ -7,7 +7,7 @@ recipes, using [Transformers](https://github.com/huggingface/transformers).
 ## Target architecture
 
 This diagram describes the intended design, not a list of implemented features.
-The inference adapters currently support Transformers and offline vLLM; the
+The inference adapters currently support Transformers, offline vLLM and offline SGLang; the
 recipes and other backends shown below are planned integrations.
 
 ```text
@@ -116,11 +116,12 @@ GPU-tested by this project. In an environment satisfying both projects' runtime
 requirements, install it separately with `uv pip install vllm`. The locked test
 setup below does not install vLLM.
 
-Importing `rl_lab.engines` does not import vLLM, Torch or Transformers.
+Importing `rl_lab.engines` does not import vLLM, SGLang, Torch or Transformers.
 The factory imports only the selected engine module. Each engine module imports
 its dependencies at module scope, so importing a concrete class directly also
 requires that backend's dependencies. Concrete classes are imported from
-`rl_lab.engines.transformers` or `rl_lab.engines.vllm`, not the package root.
+`rl_lab.engines.transformers`, `rl_lab.engines.vllm` or
+`rl_lab.engines.sglang`, not the package root.
 
 ```python
 from rl_lab.engines import create_engine
@@ -133,11 +134,27 @@ engine = create_engine("vllm", model_name="your-model", tensor_parallel_size=1)
 | --- | --- | --- | --- |
 | Transformers | Yes | Yes | Yes |
 | Offline vLLM | Yes | Not yet | No |
+| Offline SGLang | Yes | Not yet | No |
 
 Offline vLLM cleanup follows the runtime's object/process lifetime; `close()`
 drops the adapter reference, without private shutdown calls or global distributed
 teardown. Prefer a dedicated job for its independent GPU runtime rather than
 repeatedly loading it alongside a live trainer.
+
+### Offline SGLang
+
+```python
+from rl_lab.engines import create_engine, GenerationConfig
+
+# Run in a dedicated process/job; the runtime owns its worker processes.
+with create_engine("sglang", model_name="your-model", tensor_parallel_size=1) as engine:
+    outputs = engine.generate(["A raw completion prompt"], GenerationConfig(max_new_tokens=64))
+```
+
+SGLang is optional and installed separately in a compatible GPU environment.
+The adapter uses its offline Python engine, token-ID inputs and public `shutdown()`
+method. It owns a separate model runtime and cannot attach to live training weights.
+See [SGLang setup, lifecycle and limitations](docs/engines/sglang.md).
 
 ### Tests
 
