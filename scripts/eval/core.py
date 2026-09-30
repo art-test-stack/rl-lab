@@ -8,7 +8,6 @@ from rl_lab.utils.default import CACHE_DIR
 from rl_lab.utils.huggingface import load_hf_model, get_hf_token_bytes
 from rl_lab.utils.common import print0, detect_device_type
 
-from rl_lab.engines import GenerationConfig
 from rl_lab.engines.transformers import TransformersEngine
 
 class TokenizerWrapper:
@@ -104,22 +103,25 @@ def main():
                 "If 5*x + 3 = 13, then x is",
             ]
             engine = TransformersEngine(model, tokenizer, batch_size=8)
-            gen_cfg = GenerationConfig(max_new_tokens=16, num_samples=1, temperature=0)
             print0("\nConditioned samples:")
             for prompt in prompts:
-                tokens = tokenizer(prompt, prepend=tokenizer.bos_token)
-                sample, _ = engine.generate(tokens, gen_cfg)
-                sample_str = tokenizer.decode(sample[0])
+                batch = tokenizer(prompt, return_tensors="pt").to(device)
+                sample = engine.generate(
+                    batch.input_ids, batch.attention_mask, max_new_tokens=16
+                )
+                sample_str = sample[0].text
                 print0("-" * 80)
                 print0(sample_str)
                 samples.append(sample_str)
 
             print0("\nUnconditioned samples:")
-            tokens = tokenizer("", prepend=tokenizer.bos_token)
-            gen_cfg = GenerationConfig(max_new_tokens=128, num_samples=8, temperature=1.0)
-            uncond, _ = engine.generate(tokens, gen_cfg)
+            batch = tokenizer("", return_tensors="pt").to(device)
+            uncond = engine.generate(
+                batch.input_ids, batch.attention_mask,
+                max_new_tokens=128, temperature=1.0,
+            )
             for sample in uncond:
-                sample_str = tokenizer.decode(sample)
+                sample_str = sample.text
                 print0("-" * 80)
                 print0(sample_str)
                 unconditioned_samples.append(sample_str)

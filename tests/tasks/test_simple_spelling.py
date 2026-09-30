@@ -29,13 +29,18 @@ def test_inherited_contract_and_exact_scoring(words):
     assert spellingbee.SimpleSpelling(size=12, start=1, stop=8, step=2)[1] == example
 
 
-def test_runner(words):
+def test_runner(words, tokenizer):
+    task = spellingbee.SimpleSpelling(size=7, split="test")
     class SpellEngine(CompletionEngine):
         capabilities = EngineCapabilities(chat=True)
-        def generate(self, prompts, config):
-            words = [p.messages[0]["content"].removeprefix("Spell the word: ") for p in prompts]
-            return [Generation(f"{w}:{','.join(w)}") for w in words]
-    assert evaluate_task(spellingbee.SimpleSpelling(size=7, split="test"), SpellEngine(), batch_size=3).score == 1
+        def __init__(self):
+            self.tokenizer = tokenizer
+            self.position = 0
+        def generate(self, input_ids, attention_mask, **kwargs):
+            expected = [task[self.position + i]["messages"][-1]["content"] for i in range(len(input_ids))]
+            self.position += len(input_ids)
+            return [Generation(value) for value in expected]
+    assert evaluate_task(task, SpellEngine(), batch_size=3).score == 1
 
 
 def test_invalid_size_and_empty_words(words):

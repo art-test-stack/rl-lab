@@ -5,14 +5,13 @@ import torch
 
 from rl_lab.engines import (
     ChatPrompt,
-    GenerationConfig,
     LogLikelihoodRequest,
     TextPrompt,
 )
 from rl_lab.engines.transformers import TransformersEngine
 
 
-def test_attach_reuses_objects_and_restores_mixed_modes(model, tokenizer):
+def test_attach_reuses_objects_and_restores_mixed_modes(model, tokenizer, encode_inputs):
     model.train()
     model.transformer.h[0].eval()
     states = [m.training for m in model.modules()]
@@ -22,9 +21,8 @@ def test_attach_reuses_objects_and_restores_mixed_modes(model, tokenizer):
     engine = TransformersEngine.attach(model, tokenizer, batch_size=2)
     assert engine.model is model
     assert engine.tokenizer is tokenizer
-    outputs = engine.generate(
-        ["hello", TextPrompt("hello world")], GenerationConfig(max_new_tokens=2)
-    )
+    input_ids, attention_mask = encode_inputs(tokenizer, "hello", TextPrompt("hello world"))
+    outputs = engine.generate(input_ids, attention_mask, max_new_tokens=2)
     assert len(outputs) == 2
     assert [o.prompt_tokens for o in outputs] == [1, 2]
     assert all(1 <= o.completion_tokens <= 2 for o in outputs)
@@ -37,19 +35,22 @@ def test_attach_reuses_objects_and_restores_mixed_modes(model, tokenizer):
     model(torch.tensor([[4, 5]])).logits.sum().backward()
     assert any(p.grad is not None for p in model.parameters())
     with pytest.raises(RuntimeError, match="closed"):
-        engine.generate([], GenerationConfig())
+        engine.generate([], [])
 
 
-def test_batched_greedy_matches_individual_generation(model, tokenizer):
+def test_batched_greedy_matches_individual_generation(model, tokenizer, encode_inputs):
     engine = TransformersEngine.attach(model, tokenizer)
-    config = GenerationConfig(max_new_tokens=3)
     prompts = ["hello", "hello world"]
-    batched = engine.generate(prompts, config)
-    individual = [engine.generate([p], config)[0] for p in prompts]
+    ids, mask = encode_inputs(tokenizer, *prompts)
+    batched = engine.generate(ids, mask, max_new_tokens=3)
+    individual = [
+        engine.generate(*encode_inputs(tokenizer, prompt), max_new_tokens=3)[0]
+        for prompt in prompts
+    ]
     assert batched == individual
 
 
-def test_restores_modes_on_generation_failure(model, tokenizer, monkeypatch):
+def test_restores_modes_on_generation_failure(model, tokenizer, monkeypatch, encode_inputs):
     model.train()
     model.transformer.h[0].eval()
     states = [m.training for m in model.modules()]
@@ -62,12 +63,12 @@ def test_restores_modes_on_generation_failure(model, tokenizer, monkeypatch):
     monkeypatch.setattr(model, "generate", fail)
     with pytest.raises(RuntimeError, match="generation failed"):
         TransformersEngine.attach(model, tokenizer).generate(
-            ["hello"], GenerationConfig()
+            *encode_inputs(tokenizer, "hello")
         )
     assert [m.training for m in model.modules()] == states
 
 
-def test_stop_criteria_per_row_and_completion_only(model, tokenizer, monkeypatch):
+def test_stop_criteria_per_row_and_completion_only(model, tokenizer, monkeypatch, encode_inputs):
     def generate(**kwargs):
         ids = kwargs["input_ids"]
         assert ids.tolist() == [[0, 4], [4, 5]]  # left padding
@@ -81,14 +82,13 @@ def test_stop_criteria_per_row_and_completion_only(model, tokenizer, monkeypatch
 
     monkeypatch.setattr(model, "generate", generate)
     outputs = TransformersEngine.attach(model, tokenizer).generate(
-        ["hello", "hello world"],
-        GenerationConfig(stop=["answer"]),
+        *encode_inputs(tokenizer, "hello", "hello world"), stop=["answer"],
     )
     assert [o.text for o in outputs] == ["", "world "]
     assert [o.completion_tokens for o in outputs] == [1, 2]
 
 
-def test_chat_template_eos_count_and_sampling(model, tokenizer, monkeypatch):
+def test_chat_template_eos_count_and_sampling(model, tokenizer, monkeypatch, encode_inputs):
     def generate(**kwargs):
         assert kwargs["input_ids"].tolist() == [[1, 4, 6]]
         config = kwargs["generation_config"]
@@ -97,26 +97,24 @@ def test_chat_template_eos_count_and_sampling(model, tokenizer, monkeypatch):
 
     monkeypatch.setattr(model, "generate", generate)
     outputs = TransformersEngine.attach(model, tokenizer).generate(
-        [ChatPrompt([{"role": "user", "content": "hello"}])],
-        GenerationConfig(temperature=0.7, top_p=0.9),
+        *encode_inputs(tokenizer, ChatPrompt([{"role": "user", "content": "hello"}])),
+        temperature=0.7, top_p=0.9,
     )
     assert outputs[0].text == "world"
     assert outputs[0].completion_tokens == 2
 
 
-def test_pad_falls_back_to_eos_without_mutating_tokenizer(model, tokenizer):
+def test_pad_falls_back_to_eos_without_mutating_tokenizer(model, tokenizer, encode_inputs):
     tokenizer.pad_token = None
     engine = TransformersEngine.attach(model, tokenizer)
     assert (
         len(
-            engine.generate(
-                ["hello", "hello world"], GenerationConfig(max_new_tokens=1)
-            )
+            engine.generate(*encode_inputs(tokenizer, "hello", "hello world"), max_new_tokens=1)
         )
         == 2
     )
     assert tokenizer.pad_token_id is None
-    assert engine.generate([], GenerationConfig()) == []
+    assert engine.generate([], []) == []
     assert engine.loglikelihood([]) == []
 
 
@@ -143,7 +141,7 @@ def test_likelihood_rejects_merged_boundary(model, tokenizer):
     assert model.training
 
 
-def test_load_from_local_checkpoint(model, tokenizer, tmp_path):
+def test_load_from_local_checkpoint(model, tokenizer, tmp_path, encode_inputs):
     model.save_pretrained(tmp_path)
     tokenizer.save_pretrained(tmp_path)
     engine = TransformersEngine.load(
@@ -154,7 +152,7 @@ def test_load_from_local_checkpoint(model, tokenizer, tmp_path):
     )
     assert engine.model is not model
     assert (
-        engine.generate(["hello"], GenerationConfig(max_new_tokens=1))[0].prompt_tokens
+        engine.generate(*encode_inputs(engine.tokenizer, "hello"), max_new_tokens=1)[0].prompt_tokens
         == 1
     )
     engine.close()

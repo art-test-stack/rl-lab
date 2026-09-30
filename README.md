@@ -48,15 +48,17 @@ vLLM manages its own runtime and may create workers and process groups.
 ### Use the current training weights
 
 ```python
-from rl_lab.engines import GenerationConfig, ChatPrompt
 from rl_lab.engines.transformers import TransformersEngine
 
 # model and tokenizer are the exact objects already used by the trainer.
-# ChatPrompt requires a tokenizer with a configured chat template.
+# Render chat templates before passing token IDs to the engine.
 engine = TransformersEngine.attach(model, tokenizer, batch_size=8)
+inputs = tokenizer.apply_chat_template(
+    [{"role": "user", "content": "What is 2 + 2?"}],
+    tokenize=True, add_generation_prompt=True, return_tensors="pt", return_dict=True,
+)
 outputs = engine.generate(
-    [ChatPrompt([{"role": "user", "content": "What is 2 + 2?"}])],
-    GenerationConfig(max_new_tokens=64),
+    inputs.input_ids, inputs.attention_mask, max_new_tokens=64,
 )
 print(outputs[0].text)
 ```
@@ -77,22 +79,22 @@ thread-safe against concurrent training or generation on that same object.
 ### Load a standalone model
 
 ```python
-from rl_lab.engines import create_engine, GenerationConfig, LogLikelihoodRequest
+from rl_lab.engines import create_engine, LogLikelihoodRequest
 
 engine = create_engine("transformers", model_name="your-model", device="cuda")
+inputs = engine.tokenizer(["A raw completion prompt"], return_tensors="pt")
 outputs = engine.generate(
-    ["A raw completion prompt"],
-    GenerationConfig(max_new_tokens=64, temperature=0.0, stop=["END"]),
+    inputs.input_ids, inputs.attention_mask,
+    max_new_tokens=64, temperature=0.0, stop=["END"],
 )
 engine.require("loglikelihood")
 scores = engine.loglikelihood([LogLikelihoodRequest("The answer is", " A")])
 ```
 
-For generation, strings and `TextPrompt` bypass chat templating and use
-`add_special_tokens=True`. For chat conversations, pass messages through
-`ChatPrompt` to avoid duplicating special tokens in a manually rendered prompt.
-`ChatPrompt` applies the tokenizer's configured chat template once, with
-`add_generation_prompt=True`; a chat template must be available.
+`generate()` accepts token IDs and an attention mask; tokenize and render chat
+templates before calling it. Generation options are direct keyword arguments,
+such as `max_new_tokens`, `temperature`, `top_p`, and `stop`. The engine returns
+completion text and token counts, in input order.
 
 Results preserve input order and return completion text only, trimmed at the
 first requested stop string. Transformers decoding skips special tokens; vLLM
@@ -144,11 +146,12 @@ repeatedly loading it alongside a live trainer.
 ### Offline SGLang
 
 ```python
-from rl_lab.engines import create_engine, GenerationConfig
+from rl_lab.engines import create_engine
 
 # Run in a dedicated process/job; the runtime owns its worker processes.
 with create_engine("sglang", model_name="your-model", tensor_parallel_size=1) as engine:
-    outputs = engine.generate(["A raw completion prompt"], GenerationConfig(max_new_tokens=64))
+    inputs = engine.tokenizer(["A raw completion prompt"], return_tensors="pt")
+    outputs = engine.generate(inputs.input_ids, inputs.attention_mask, max_new_tokens=64)
 ```
 
 SGLang is optional and installed separately in a compatible GPU environment.

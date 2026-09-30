@@ -3,7 +3,10 @@
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Literal, Sequence, TypedDict
+from typing import TYPE_CHECKING, Literal, Sequence, TypedDict
+
+if TYPE_CHECKING:
+    import torch
 
 
 class Message(TypedDict):
@@ -22,32 +25,6 @@ class ChatPrompt:
 
 
 ModelInput = str | TextPrompt | ChatPrompt
-
-
-@dataclass(frozen=True)
-class GenerationConfig:
-    max_new_tokens: int = 512
-    temperature: float = 0.0
-    top_p: float = 1.0
-    stop: tuple[str, ...] | list[str] | None = None
-
-    def __post_init__(self):
-        if (
-            isinstance(self.max_new_tokens, bool)
-            or not isinstance(self.max_new_tokens, int)
-            or self.max_new_tokens < 1
-        ):
-            raise ValueError("max_new_tokens must be a positive integer")
-        if not math.isfinite(self.temperature) or self.temperature < 0:
-            raise ValueError("temperature must be finite and non-negative")
-        if not 0 < self.top_p <= 1:
-            raise ValueError("top_p must be in (0, 1]")
-        if self.stop is not None:
-            if isinstance(self.stop, str) or any(
-                not isinstance(s, str) or not s for s in self.stop
-            ):
-                raise ValueError("stop must be a sequence of non-empty strings")
-            object.__setattr__(self, "stop", tuple(self.stop))
 
 
 @dataclass(frozen=True)
@@ -83,9 +60,16 @@ class CompletionEngine(ABC):
 
     @abstractmethod
     def generate(
-        self, prompts: Sequence[ModelInput], config: GenerationConfig
+        self,
+        input_ids: "torch.Tensor | list[int] | list[list[int]]",
+        attention_mask: "torch.Tensor | list[int] | list[list[int]]",
+        *,
+        max_new_tokens: int = 51,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        stop: Sequence[str] | None = None,
     ) -> list[Generation]:
-        """Return one completion per input, preserving input order."""
+        """Generate one completion for each row of token IDs."""
 
     def loglikelihood(self, requests: Sequence[LogLikelihoodRequest]) -> list[float]:
         """Return summed continuation log probabilities (natural logarithms)."""
@@ -112,9 +96,54 @@ def text_prompt(prompt: ModelInput) -> str:
         return prompt
     if isinstance(prompt, TextPrompt):
         return prompt.text
-    raise TypeError("Expected str, TextPrompt or ChatPrompt")
+    raise TypeError(f"Expected str, TextPrompt or ChatPrompt, got {type(prompt)}.")
 
 
 def trim_stop(text: str, stops: Sequence[str] | None) -> str:
     positions = [index for stop in stops or () if (index := text.find(stop)) >= 0]
     return text[: min(positions)] if positions else text
+
+
+def validate_generation_options(max_new_tokens, temperature, top_p, stop):
+    if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, int) or max_new_tokens < 1:
+        raise ValueError("max_new_tokens must be a positive integer")
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or not math.isfinite(temperature) or temperature < 0:
+        raise ValueError("temperature must be finite and non-negative")
+    if isinstance(top_p, bool) or not isinstance(top_p, (int, float)) or not 0 < top_p <= 1:
+        raise ValueError("top_p must be in (0, 1]")
+    if stop is not None and (
+        isinstance(stop, str)
+        or not isinstance(stop, Sequence)
+        or any(not isinstance(s, str) or not s for s in stop)
+    ):
+        raise ValueError("stop must be a sequence of non-empty strings")
+    return tuple(stop) if stop else None
+
+
+def token_batch(input_ids, attention_mask):
+    """Convert 1D/2D token inputs to rows and validate their attention masks."""
+    if hasattr(input_ids, "tolist"):
+        input_ids = input_ids.tolist()
+    if hasattr(attention_mask, "tolist"):
+        attention_mask = attention_mask.tolist()
+    if not isinstance(input_ids, (list, tuple)) or not isinstance(attention_mask, (list, tuple)):
+        raise TypeError("input_ids and attention_mask must be tensors or integer lists")
+    if not input_ids or not attention_mask:
+        return [], []
+    if isinstance(input_ids[0], int):
+        input_ids = [input_ids]
+    if isinstance(attention_mask[0], int):
+        attention_mask = [attention_mask]
+    if len(input_ids) != len(attention_mask):
+        raise ValueError("input_ids and attention_mask must have the same batch size")
+    rows, masks = [], []
+    for ids, mask in zip(input_ids, attention_mask, strict=True):
+        if len(ids) != len(mask) or not ids:
+            raise ValueError("Each token row needs a same-length, non-empty attention mask")
+        if any(isinstance(token, bool) or not isinstance(token, int) or token < 0 for token in ids):
+            raise ValueError("input_ids must contain non-negative integers")
+        if any(bit not in (0, 1) for bit in mask) or not any(mask):
+            raise ValueError("attention_mask rows must contain 0/1 values and at least one token")
+        rows.append(list(ids))
+        masks.append(list(mask))
+    return rows, masks

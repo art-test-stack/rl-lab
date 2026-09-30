@@ -7,7 +7,6 @@ import pytest
 
 from rl_lab.engines import (
     ChatPrompt,
-    GenerationConfig,
     create_engine,
 )
 
@@ -26,7 +25,7 @@ def vllm_backend(monkeypatch):
         vars(sys.modules["rl_lab.engines"]).pop("vllm", None)
 
 
-def test_vllm_offline_mapping_and_close(vllm_backend, tokenizer):
+def test_vllm_offline_mapping_and_close(vllm_backend, tokenizer, encode_inputs):
     llm = Mock()
     llm.get_tokenizer.return_value = tokenizer
     llm.generate.return_value = [
@@ -37,20 +36,20 @@ def test_vllm_offline_mapping_and_close(vllm_backend, tokenizer):
     factory.return_value = llm
     engine = create_engine("vllm", model_name="test", tensor_parallel_size=2)
     factory.assert_called_once_with(model="test", tensor_parallel_size=2)
-    outputs = engine.generate(
-        ["hello", ChatPrompt([{"role": "user", "content": "hello"}])],
-        GenerationConfig(max_new_tokens=5, stop=["END"]),
+    ids, mask = encode_inputs(
+        tokenizer, "hello", ChatPrompt([{"role": "user", "content": "hello"}])
     )
+    outputs = engine.generate(ids, mask, max_new_tokens=5, stop=["END"])
     inputs, params = llm.generate.call_args.args
     assert inputs == [{"prompt_token_ids": [4]}, {"prompt_token_ids": [1, 4, 6]}]
     assert params.max_tokens == 5 and params.temperature == 0 and params.stop == ["END"]
     assert [o.text for o in outputs] == ["world", "A"]
     assert outputs[0].completion_tokens == 2
-    assert engine.generate([], GenerationConfig()) == []
+    assert engine.generate([], []) == []
     engine.close()
     engine.close()
     with pytest.raises(RuntimeError, match="closed"):
-        engine.generate(["hello"], GenerationConfig())
+        engine.generate([4], [1])
     llm.shutdown.assert_not_called()
 
 

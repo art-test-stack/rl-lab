@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from rl_lab.engines import ChatPrompt, EngineConfig, EngineRouter, GenerationConfig, TextPrompt, create_engine
+from rl_lab.engines import ChatPrompt, EngineConfig, EngineRouter, TextPrompt, create_engine
 
 
 @pytest.fixture
@@ -61,58 +61,50 @@ def test_config_factory_and_no_live_attachment(backend):
         create_engine("sglang", model=object(), tokenizer=object())
 
 
-def test_generation_chat_token_ids_order_stops_and_usage(backend, tokenizer):
+def test_generation_token_ids_order_stops_and_usage(backend, tokenizer, encode_inputs):
     module, calls = backend
     chat = ChatPrompt([{"role": "user", "content": "hello"}])
-    config = GenerationConfig(max_new_tokens=9, temperature=0.0, top_p=0.8, stop=["END"])
     with module.SGLangEngine("model") as engine:
-        out = engine.generate(["hello", chat, TextPrompt("world")], config)
+        ids, mask = encode_inputs(tokenizer, "hello", chat, TextPrompt("world"))
+        out = engine.generate(ids, mask, max_new_tokens=9, top_p=0.8, stop=["END"])
         assert [o.text for o in out] == ["answer 0 ", "answer 1 ", "answer 2 "]
-        expected_chat = tokenizer.apply_chat_template(chat.messages, tokenize=True, add_generation_prompt=True, return_dict=False)
         args = calls["generate"][0]
-        assert args["input_ids"] == [tokenizer.encode("hello", add_special_tokens=True), expected_chat,
-                                      tokenizer.encode("world", add_special_tokens=True)]
+        assert args["input_ids"] == [[4], [1, 4, 6], [5]]
         assert args["sampling_params"] == {"n": 1, "max_new_tokens": 9, "temperature": 0.0, "top_p": 0.8,
             "top_k": -1, "stop": ["END"], "skip_special_tokens": True, "no_stop_trim": False}
         assert args["stream"] is False
         assert [o.prompt_tokens for o in out] == [len(ids) for ids in args["input_ids"]]
         assert [o.completion_tokens for o in out] == [5, 5, 5]
-        assert engine.generate([], config) == []
+        assert engine.generate([], []) == []
         assert len(calls["generate"]) == 1
     assert calls["shutdown"] == 1
     engine.close()
     assert calls["shutdown"] == 1
     with pytest.raises(RuntimeError, match="closed"):
-        engine.generate([], config)
+        engine.generate([], [])
 
 
 def test_single_result_and_missing_usage(backend):
     module, _ = backend
     with module.SGLangEngine("model") as engine:
         engine.llm.output = {"text": "answer"}
-        out = engine.generate(["hello"], GenerationConfig())[0]
+        out = engine.generate([4], [1])[0]
         assert out.text == "answer" and out.prompt_tokens == 1
         assert out.completion_tokens is None
 
 
-def test_empty_prompt_fallback_and_missing_bos(backend, tokenizer):
+def test_empty_token_row_is_rejected(backend):
     module, calls = backend
     with module.SGLangEngine("model") as engine:
-        engine.generate([""], GenerationConfig())
-        assert calls["generate"][0]["input_ids"] == [[tokenizer.bos_token_id]]
-        tokenizer.bos_token = None
-        with pytest.raises(ValueError, match="BOS"):
-            engine.generate([""], GenerationConfig())
+        with pytest.raises(ValueError, match="non-empty"):
+            engine.generate([[]], [[]])
 
 
-def test_chat_template_required_and_bad_content(backend, tokenizer):
+def test_invalid_token_mask(backend):
     module, calls = backend
     with module.SGLangEngine("model") as engine:
-        with pytest.raises(ValueError, match="Chat prompts"):
-            engine.generate([ChatPrompt([{"role": "user", "content": []}])], GenerationConfig())
-        tokenizer.chat_template = None
-        with pytest.raises(ValueError, match="chat template|chat_template"):
-            engine.generate([ChatPrompt([{"role": "user", "content": "hello"}])], GenerationConfig())
+        with pytest.raises(ValueError, match="attention mask"):
+            engine.generate([[4]], [[0]])
     assert calls["generate"] == []
 
 
@@ -123,7 +115,7 @@ def test_bad_backend_output(backend, output):
     with module.SGLangEngine("model") as engine:
         engine.llm.output = output
         with pytest.raises(RuntimeError):
-            engine.generate(["hello"], GenerationConfig())
+            engine.generate([4], [1])
 
 
 def test_shutdown_on_exception_and_no_likelihood(backend):
