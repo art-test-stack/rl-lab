@@ -8,7 +8,6 @@ import torch
 from rl_lab.engines import (
     ChatPrompt,
     CompletionEngine,
-    LogLikelihoodRequest,
     TextPrompt,
 )
 from rl_lab.tasks._base import Task
@@ -96,11 +95,10 @@ def evaluate_task(
 ) -> EvalResult:
     """Return the mean per-example score without loading or closing an engine.
 
-    Tasks own input construction, candidate strings and scalar scoring. Categorical
-    predictions maximize summed continuation log likelihood; ties select the first
-    candidate. This is not a CORE, agentic, pass@k or distributed benchmark runner.
-    ``batch_size`` bounds examples per batch (and thus generated completions), not
-    the number of candidate continuations in a categorical batch.
+    Tasks own input construction and scalar scoring. This runner currently supports
+    generative tasks only; categorical scoring is deferred. This is not a CORE,
+    agentic, pass@k or distributed benchmark runner.
+    ``batch_size`` bounds examples per generation batch.
     """
     _positive_integer("batch_size", batch_size)
     if limit is not None:
@@ -111,9 +109,9 @@ def evaluate_task(
         kind = task.eval_type
     except NotImplementedError as error:
         raise ValueError(f"{type(task).__name__} does not define an evaluation protocol") from error
-    if kind not in {"generative", "categorical"}:
+    if kind != "generative":
         raise ValueError(f"Unsupported task eval_type: {kind!r}")
-    engine.require("generation" if kind == "generative" else "loglikelihood")
+    engine.require("generation")
     count = len(task) if limit is None else min(len(task), limit)
     if count == 0:
         raise ValueError("Cannot evaluate an empty task")
@@ -128,46 +126,20 @@ def evaluate_task(
         ]
         if any(isinstance(prompt, ChatPrompt) for prompt in prompts):
             engine.require("chat")
-        if kind == "generative":
-            if tokenizer is None:
-                raise ValueError("Generative evaluation requires a tokenizer")
-            input_ids, attention_mask = _encode_batch(tokenizer, prompts)
-            outputs = engine.generate(
-                input_ids,
-                attention_mask,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                stop=stop,
-            )
-            if len(outputs) != len(examples):
-                raise RuntimeError("Engine returned an unexpected number of completions")
-            completions = [output[0] for output in outputs]
-        else:
-            candidates = []
-            requests = []
-            for example, prompt in zip(examples, prompts, strict=True):
-                choices = task.evaluation_candidates(example)
-                if isinstance(choices, str):
-                    raise ValueError("Candidates must be a sequence of non-empty strings")
-                choices = tuple(choices)
-                if not choices or any(not isinstance(c, str) or not c for c in choices):
-                    raise ValueError("Candidates must be a sequence of non-empty strings")
-                candidates.append(choices)
-                requests.extend(LogLikelihoodRequest(prompt, choice) for choice in choices)
-            scores = engine.loglikelihood(requests)
-            if len(scores) != len(requests):
-                raise RuntimeError("Engine returned an unexpected number of scores")
-            if any(math.isnan(score) or score == math.inf for score in scores):
-                raise ValueError("Engine returned invalid likelihood scores")
-            completions = []
-            offset = 0
-            for choices in candidates:
-                option_scores = scores[offset:offset + len(choices)]
-                if all(score == -math.inf for score in option_scores):
-                    raise ValueError("All candidates have negative-infinite likelihood")
-                completions.append(choices[max(range(len(choices)), key=option_scores.__getitem__)])
-                offset += len(choices)
+        if tokenizer is None:
+            raise ValueError("Generative evaluation requires a tokenizer")
+        input_ids, attention_mask = _encode_batch(tokenizer, prompts)
+        outputs = engine.generate(
+            input_ids,
+            attention_mask,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            stop=stop,
+        )
+        if len(outputs) != len(examples):
+            raise RuntimeError("Engine returned an unexpected number of completions")
+        completions = [output[0] for output in outputs]
         for example, completion in zip(examples, completions, strict=True):
             score = float(task.evaluate(example, completion))
             if not math.isfinite(score):

@@ -9,14 +9,13 @@ from .base import (
     CompletionEngine,
     EngineCapabilities,
     Generation,
-    LogLikelihoodRequest,
     trim_stop,
     validate_generation_options,
 )
 
 
 class TransformersEngine(CompletionEngine):
-    capabilities = EngineCapabilities(loglikelihood=True, chat=True)
+    capabilities = EngineCapabilities(chat=True)
 
     def __init__(self, model, tokenizer):
         self.model = model
@@ -126,9 +125,6 @@ class TransformersEngine(CompletionEngine):
                 )
             )
         return results
-
-    def loglikelihood(self, requests: Sequence[LogLikelihoodRequest]) -> list[float]:
-        pass
 
     def close(self):
         # Only drop our references; the trainer's model, optimizer and groups survive.

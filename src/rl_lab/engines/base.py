@@ -32,15 +32,8 @@ Generation = tuple[str, int | None, int | None]
 
 
 @dataclass(frozen=True)
-class LogLikelihoodRequest:
-    context: ModelInput
-    continuation: str
-
-
-@dataclass(frozen=True)
 class EngineCapabilities:
     generation: bool = True
-    loglikelihood: bool = False
     chat: bool = False
 
 
@@ -66,12 +59,6 @@ class CompletionEngine(ABC):
         stop: Sequence[str] | None = None,
     ) -> list[Generation]:
         """Generate one completion for each row of token IDs."""
-
-    def loglikelihood(self, requests: Sequence[LogLikelihoodRequest]) -> list[float]:
-        """Return summed continuation log probabilities (natural logarithms)."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support loglikelihood"
-        )
 
     def close(self) -> None:
         """Release adapter-owned references/resources, never trainer resources."""
