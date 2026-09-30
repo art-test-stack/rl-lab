@@ -3,7 +3,7 @@
 The adapter uses SGLang's offline Python `Engine`, without starting an HTTP
 server. Construction loads a separate model runtime and may start workers and
 initialize distributed resources. Attaching live Transformers training weights
-is not supported; use `TransformersEngine.attach` for that path.
+is not supported; pass them to `TransformersEngine(model, tokenizer)` instead.
 
 SGLang is optional and absent from the base lock. Install it separately in an
 environment compatible with both SGLang's GPU dependencies and rl-lab's Python
@@ -35,7 +35,7 @@ def main():
             max_new_tokens=64,
             temperature=0.0,
         )
-        print(outputs[0].text)
+        print(outputs[0][0])
 
 if __name__ == "__main__":
     main()

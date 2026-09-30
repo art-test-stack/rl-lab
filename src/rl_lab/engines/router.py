@@ -25,13 +25,13 @@ def create_engine(
             raise ValueError("Only transformers can attach to a live model")
         if tokenizer is None:
             raise ValueError("An attached model requires its tokenizer")
-        if set(kwargs) - {"batch_size"}:
+        if kwargs:
             raise ValueError(
-                "Attached models only accept batch_size; the trainer owns placement and dtype"
+                "Attached models do not accept engine options; the trainer owns placement and dtype"
             )
         from .transformers import TransformersEngine
 
-        return TransformersEngine.attach(model, tokenizer, **kwargs)
+        return TransformersEngine(model, tokenizer)
     if tokenizer is not None:
         raise ValueError("tokenizer is only accepted with an attached model")
     if not model_name:
@@ -68,4 +68,3 @@ class EngineRouter:
                 "tensor_parallel_size is only supported by the vllm and sglang factories"
             )
         return create_engine(config.backend, model_name=config.model, **kwargs)
-

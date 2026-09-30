@@ -21,7 +21,7 @@ class VLLMEngine(CompletionEngine):
     def __init__(self, model: str, **kwargs):
         if not isinstance(model, str):
             raise TypeError(
-                "vLLM needs a model name/path; use TransformersEngine.attach for live training weights"
+                "vLLM needs a model name/path; pass live training weights to TransformersEngine(model, tokenizer)"
             )
         self.llm = LLM(model=model, **kwargs)
 
@@ -66,7 +66,7 @@ class VLLMEngine(CompletionEngine):
         if len(outputs) != len(rows):
             raise RuntimeError("vLLM returned an unexpected number of results")
         return [
-            Generation(
+            (
                 trim_stop(output.outputs[0].text, stop),
                 len(output.prompt_token_ids),
                 len(output.outputs[0].token_ids),

@@ -142,7 +142,7 @@ def evaluate_task(
             )
             if len(outputs) != len(examples):
                 raise RuntimeError("Engine returned an unexpected number of completions")
-            completions = [output.text for output in outputs]
+            completions = [output[0] for output in outputs]
         else:
             candidates = []
             requests = []

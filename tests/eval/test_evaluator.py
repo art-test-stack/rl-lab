@@ -239,7 +239,7 @@ def test_runner_with_real_attached_engine(model, tokenizer):
             return completion in {"A", "B"}
 
     model.train()
-    engine = TransformersEngine.attach(model, tokenizer)
+    engine = TransformersEngine(model, tokenizer)
     assert evaluate_task(RawTask([row()]), engine).score == 1
     assert model.training
     assert engine.model is model

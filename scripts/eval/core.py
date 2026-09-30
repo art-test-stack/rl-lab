@@ -102,7 +102,7 @@ def main():
                 "My favorite color is",
                 "If 5*x + 3 = 13, then x is",
             ]
-            engine = TransformersEngine(model, tokenizer, batch_size=8)
+            engine = TransformersEngine(model, tokenizer)
             print0("\nConditioned samples:")
             for prompt in prompts:
                 batch = tokenizer(prompt, return_tensors="pt").to(device)

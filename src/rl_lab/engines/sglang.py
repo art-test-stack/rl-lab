@@ -96,10 +96,13 @@ class SGLangEngine(CompletionEngine):
             for count in (prompt_tokens, completion_tokens):
                 if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
                     raise RuntimeError("SGLang returned an invalid token count")
-            results.append(Generation(
-                text=trim_stop(output["text"], stop),
-                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-            ))
+            results.append(
+                (
+                    trim_stop(output["text"], stop),
+                    prompt_tokens,
+                    completion_tokens,
+                )
+            )
         return results
 
     def close(self):

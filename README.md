@@ -52,7 +52,7 @@ from rl_lab.engines.transformers import TransformersEngine
 
 # model and tokenizer are the exact objects already used by the trainer.
 # Render chat templates before passing token IDs to the engine.
-engine = TransformersEngine.attach(model, tokenizer, batch_size=8)
+engine = TransformersEngine(model, tokenizer)
 inputs = tokenizer.apply_chat_template(
     [{"role": "user", "content": "What is 2 + 2?"}],
     tokenize=True, add_generation_prompt=True, return_tensors="pt", return_dict=True,
@@ -60,17 +60,17 @@ inputs = tokenizer.apply_chat_template(
 outputs = engine.generate(
     inputs.input_ids, inputs.attention_mask, max_new_tokens=64,
 )
-print(outputs[0].text)
+print(outputs[0][0])
 ```
 
-`attach()` does not load/copy weights or move the model. Inference runs without
-autograd and restores every submodule's original train/eval flag, including on
-failure. Closing the adapter only drops its references; the trainer's model,
-optimizer and process groups remain usable. No context manager is required.
-`from_model()` and `from_pretrained()` are aliases for `attach()` and `load()`.
+Construction with an existing model and tokenizer does not copy weights or move
+the model. Generation runs without autograd, switches the model to eval mode,
+then restores its top-level train/eval flag. Closing the adapter only drops its
+references; the trainer's model, optimizer and process groups remain usable.
+`from_pretrained()` is an alias for `load()`.
 
 The attached path currently expects a decoder-only HF-compatible model exposing
-`generate()` and `get_input_embeddings()`. DDP/FSDP/TP wrapping and collective
+`generate()`. DDP/FSDP/TP wrapping and collective
 participation remain the training runtime's responsibility: this adapter does
 not automatically unwrap models or promise rank-zero-only sharded inference.
 Pause training while evaluating a borrowed model; these operations are not

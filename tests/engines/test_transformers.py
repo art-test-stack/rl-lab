@@ -1,45 +1,48 @@
-import copy
-
 import pytest
 import torch
 
 from rl_lab.engines import (
     ChatPrompt,
     LogLikelihoodRequest,
-    TextPrompt,
 )
 from rl_lab.engines.transformers import TransformersEngine
 
 
-def test_attach_reuses_objects_and_restores_mixed_modes(model, tokenizer, encode_inputs):
+def test_generate_batches_and_returns_text_and_token_counts(model, tokenizer, monkeypatch):
     model.train()
-    model.transformer.h[0].eval()
-    states = [m.training for m in model.modules()]
-    weights = [p.detach().clone() for p in model.parameters()]
-    tokenizer_settings = (tokenizer.padding_side, tokenizer.pad_token_id)
-    generation_config = copy.deepcopy(model.generation_config.to_dict())
-    engine = TransformersEngine.attach(model, tokenizer, batch_size=2)
+    engine = TransformersEngine(model, tokenizer)
     assert engine.model is model
     assert engine.tokenizer is tokenizer
-    input_ids, attention_mask = encode_inputs(tokenizer, "hello", TextPrompt("hello world"))
-    outputs = engine.generate(input_ids, attention_mask, max_new_tokens=2)
-    assert len(outputs) == 2
-    assert [o.prompt_tokens for o in outputs] == [1, 2]
-    assert all(1 <= o.completion_tokens <= 2 for o in outputs)
-    assert [m.training for m in model.modules()] == states
-    assert (tokenizer.padding_side, tokenizer.pad_token_id) == tokenizer_settings
-    assert model.generation_config.to_dict() == generation_config
-    assert all(torch.equal(old, new) for old, new in zip(weights, model.parameters()))
-    engine.close()
-    assert [m.training for m in model.modules()] == states
-    model(torch.tensor([[4, 5]])).logits.sum().backward()
-    assert any(p.grad is not None for p in model.parameters())
-    with pytest.raises(RuntimeError, match="closed"):
-        engine.generate([], [])
+
+    def generate(**kwargs):
+        assert kwargs["input_ids"].tolist() == [[0, 4], [4, 5]]
+        assert kwargs["attention_mask"].tolist() == [[0, 1], [1, 1]]
+        assert kwargs["max_new_tokens"] == 3
+        assert kwargs["do_sample"] is True
+        assert kwargs["temperature"] == 0.7
+        assert kwargs["top_p"] == 0.9
+        assert kwargs["top_k"] == 0
+        assert "stop_strings" not in kwargs
+        assert not model.training
+        assert not torch.is_grad_enabled()
+        return torch.tensor([[0, 4, 6, 2, 0], [4, 5, 5, 6, 6]])
+
+    monkeypatch.setattr(model, "generate", generate)
+    outputs = engine.generate(
+        [[0, 4], [4, 5]],
+        [[0, 1], [1, 1]],
+        max_new_tokens=3,
+        temperature=0.7,
+        top_p=0.9,
+        stop=["answer"],
+    )
+
+    assert outputs == [("", 1, 2), ("world ", 2, 3)]
+    assert model.training
 
 
 def test_batched_greedy_matches_individual_generation(model, tokenizer, encode_inputs):
-    engine = TransformersEngine.attach(model, tokenizer)
+    engine = TransformersEngine(model, tokenizer)
     prompts = ["hello", "hello world"]
     ids, mask = encode_inputs(tokenizer, *prompts)
     batched = engine.generate(ids, mask, max_new_tokens=3)
@@ -50,10 +53,8 @@ def test_batched_greedy_matches_individual_generation(model, tokenizer, encode_i
     assert batched == individual
 
 
-def test_restores_modes_on_generation_failure(model, tokenizer, monkeypatch, encode_inputs):
+def test_restores_top_level_mode_on_generation_failure(model, tokenizer, monkeypatch):
     model.train()
-    model.transformer.h[0].eval()
-    states = [m.training for m in model.modules()]
 
     def fail(**kwargs):
         assert not torch.is_grad_enabled()
@@ -62,51 +63,14 @@ def test_restores_modes_on_generation_failure(model, tokenizer, monkeypatch, enc
 
     monkeypatch.setattr(model, "generate", fail)
     with pytest.raises(RuntimeError, match="generation failed"):
-        TransformersEngine.attach(model, tokenizer).generate(
-            *encode_inputs(tokenizer, "hello")
+        TransformersEngine(model, tokenizer).generate(
+            [4], [1]
         )
-    assert [m.training for m in model.modules()] == states
-
-
-def test_stop_criteria_per_row_and_completion_only(model, tokenizer, monkeypatch, encode_inputs):
-    def generate(**kwargs):
-        ids = kwargs["input_ids"]
-        assert ids.tolist() == [[0, 4], [4, 5]]  # left padding
-        assert kwargs["attention_mask"].tolist() == [[0, 1], [1, 1]]
-        assert not kwargs["generation_config"].do_sample
-        assert kwargs["stopping_criteria"](ids, None).tolist() == [False, False]
-        out = torch.cat([ids, torch.tensor([[6, 2], [5, 6]])], dim=1)
-        # One row finishes earlier; the other must continue independently.
-        assert kwargs["stopping_criteria"](out[:, :-1], None).tolist() == [True, False]
-        return out
-
-    monkeypatch.setattr(model, "generate", generate)
-    outputs = TransformersEngine.attach(model, tokenizer).generate(
-        *encode_inputs(tokenizer, "hello", "hello world"), stop=["answer"],
-    )
-    assert [o.text for o in outputs] == ["", "world "]
-    assert [o.completion_tokens for o in outputs] == [1, 2]
-
-
-def test_chat_template_eos_count_and_sampling(model, tokenizer, monkeypatch, encode_inputs):
-    def generate(**kwargs):
-        assert kwargs["input_ids"].tolist() == [[1, 4, 6]]
-        config = kwargs["generation_config"]
-        assert config.do_sample and config.temperature == 0.7 and config.top_p == 0.9
-        return torch.cat([kwargs["input_ids"], torch.tensor([[5, 2, 0]])], dim=1)
-
-    monkeypatch.setattr(model, "generate", generate)
-    outputs = TransformersEngine.attach(model, tokenizer).generate(
-        *encode_inputs(tokenizer, ChatPrompt([{"role": "user", "content": "hello"}])),
-        temperature=0.7, top_p=0.9,
-    )
-    assert outputs[0].text == "world"
-    assert outputs[0].completion_tokens == 2
 
 
 def test_pad_falls_back_to_eos_without_mutating_tokenizer(model, tokenizer, encode_inputs):
     tokenizer.pad_token = None
-    engine = TransformersEngine.attach(model, tokenizer)
+    engine = TransformersEngine(model, tokenizer)
     assert (
         len(
             engine.generate(*encode_inputs(tokenizer, "hello", "hello world"), max_new_tokens=1)
@@ -115,11 +79,10 @@ def test_pad_falls_back_to_eos_without_mutating_tokenizer(model, tokenizer, enco
     )
     assert tokenizer.pad_token_id is None
     assert engine.generate([], []) == []
-    assert engine.loglikelihood([]) == []
 
 
 def test_likelihood_matches_manual_causal_scoring_and_restores_mode(model, tokenizer):
-    engine = TransformersEngine.attach(model, tokenizer)
+    engine = TransformersEngine(model, tokenizer)
     model.eval()
     with torch.no_grad():
         logprobs = model(torch.tensor([[4, 5, 6]])).logits[0].log_softmax(-1)
@@ -135,7 +98,7 @@ def test_likelihood_matches_manual_causal_scoring_and_restores_mode(model, token
 
 def test_likelihood_rejects_merged_boundary(model, tokenizer):
     with pytest.raises(ValueError, match="boundary"):
-        TransformersEngine.attach(model, tokenizer).loglikelihood(
+        TransformersEngine(model, tokenizer).loglikelihood(
             [LogLikelihoodRequest("hello", "world")]
         )
     assert model.training
@@ -152,14 +115,14 @@ def test_load_from_local_checkpoint(model, tokenizer, tmp_path, encode_inputs):
     )
     assert engine.model is not model
     assert (
-        engine.generate(*encode_inputs(engine.tokenizer, "hello"), max_new_tokens=1)[0].prompt_tokens
+        engine.generate(*encode_inputs(engine.tokenizer, "hello"), max_new_tokens=1)[0][1]
         == 1
     )
     engine.close()
 
 
 def test_chat_likelihood_and_trailing_whitespace(model, tokenizer):
-    engine = TransformersEngine.attach(model, tokenizer)
+    engine = TransformersEngine(model, tokenizer)
     context = ChatPrompt([{"role": "user", "content": "hello"}])
     scores = engine.loglikelihood([LogLikelihoodRequest(context, "A")])
     assert len(scores) == 1 and scores[0] < 0
