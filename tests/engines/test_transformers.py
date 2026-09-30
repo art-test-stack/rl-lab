@@ -1,10 +1,6 @@
 import pytest
 import torch
 
-from rl_lab.engines import (
-    ChatPrompt,
-    LogLikelihoodRequest,
-)
 from rl_lab.engines.transformers import TransformersEngine
 
 
@@ -81,29 +77,6 @@ def test_pad_falls_back_to_eos_without_mutating_tokenizer(model, tokenizer, enco
     assert engine.generate([], []) == []
 
 
-def test_likelihood_matches_manual_causal_scoring_and_restores_mode(model, tokenizer):
-    engine = TransformersEngine(model, tokenizer)
-    model.eval()
-    with torch.no_grad():
-        logprobs = model(torch.tensor([[4, 5, 6]])).logits[0].log_softmax(-1)
-        expected = (logprobs[0, 5] + logprobs[1, 6]).item()
-    model.train()
-    result = engine.loglikelihood([LogLikelihoodRequest("hello", " world answer")])
-    assert result[0] == pytest.approx(expected, abs=1e-6)
-    assert model.training
-    assert all(p.grad is None for p in model.parameters())
-    assert engine.loglikelihood([LogLikelihoodRequest("hello", "")]) == [0.0]
-    assert engine.loglikelihood([LogLikelihoodRequest("", "world")])[0] < 0
-
-
-def test_likelihood_rejects_merged_boundary(model, tokenizer):
-    with pytest.raises(ValueError, match="boundary"):
-        TransformersEngine(model, tokenizer).loglikelihood(
-            [LogLikelihoodRequest("hello", "world")]
-        )
-    assert model.training
-
-
 def test_load_from_local_checkpoint(model, tokenizer, tmp_path, encode_inputs):
     model.save_pretrained(tmp_path)
     tokenizer.save_pretrained(tmp_path)
@@ -119,17 +92,3 @@ def test_load_from_local_checkpoint(model, tokenizer, tmp_path, encode_inputs):
         == 1
     )
     engine.close()
-
-
-def test_chat_likelihood_and_trailing_whitespace(model, tokenizer):
-    engine = TransformersEngine(model, tokenizer)
-    context = ChatPrompt([{"role": "user", "content": "hello"}])
-    scores = engine.loglikelihood([LogLikelihoodRequest(context, "A")])
-    assert len(scores) == 1 and scores[0] < 0
-    assert engine.loglikelihood(
-        [LogLikelihoodRequest("hello ", "world")]
-    ) == engine.loglikelihood(
-        [
-            LogLikelihoodRequest("hello", " world"),
-        ]
-    )

@@ -3,7 +3,7 @@ import random
 import pytest
 from datasets import Dataset
 
-from rl_lab.engines import CompletionEngine, EngineCapabilities, Generation
+from rl_lab.engines import CompletionEngine, EngineCapabilities
 from rl_lab.eval import evaluate_task
 from rl_lab.tasks import gpqa
 
@@ -56,20 +56,22 @@ def test_bad_configuration_before_download(dataset, kwargs):
     assert dataset == []
 
 
-@pytest.mark.parametrize("mode", ["generative", "categorical"])
-def test_runner_integration(dataset, mode, tokenizer):
-    task = gpqa.GPQA(evaluation=mode, stop=2)
+def test_runner_integration(dataset, tokenizer):
+    task = gpqa.GPQA(evaluation="generative", stop=2)
     class Engine(CompletionEngine):
-        capabilities = EngineCapabilities(generation=True, loglikelihood=True, chat=True)
+        capabilities = EngineCapabilities(generation=True, chat=True)
         def __init__(self):
             self.tokenizer = tokenizer
             self.position = 0
         def generate(self, input_ids, attention_mask, **kwargs):
-            outputs = [Generation(f"The correct answer is ({task[self.position + i]['messages'][-1]['content']})")
-                       for i in range(len(input_ids))]
+            outputs = [
+                (
+                    f"The correct answer is ({task[self.position + i]['messages'][-1]['content']})",
+                    None,
+                    None,
+                )
+                for i in range(len(input_ids))
+            ]
             self.position += len(input_ids)
             return outputs
-        def loglikelihood(self, requests):
-            return [0 if r.continuation == task[i // 4]["messages"][-1]["content"] else -10
-                    for i, r in enumerate(requests)]
     assert evaluate_task(task, Engine()).score == 1.0

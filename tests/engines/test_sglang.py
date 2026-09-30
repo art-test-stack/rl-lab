@@ -118,13 +118,11 @@ def test_bad_backend_output(backend, output):
             engine.generate([4], [1])
 
 
-def test_shutdown_on_exception_and_no_likelihood(backend):
+def test_shutdown_on_exception(backend):
     module, calls = backend
-    with pytest.raises(NotImplementedError, match="loglikelihood"):
-        with module.SGLangEngine("model") as engine:
-            with pytest.raises(ValueError, match="loglikelihood"):
-                engine.require("loglikelihood")
-            engine.loglikelihood([])
+    with pytest.raises(RuntimeError, match="failure"):
+        with module.SGLangEngine("model"):
+            raise RuntimeError("failure")
     assert calls["shutdown"] == 1
 
 
