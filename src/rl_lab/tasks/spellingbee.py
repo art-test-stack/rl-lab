@@ -31,7 +31,7 @@ Adapted from https://github.com/karpathy/nanochat/blob/a5a3a33c63f996c56c0976d45
 import re
 import random
 from ._base import Task
-from nanochat.common import download_file_with_lock # TODO: handle this
+from rl_lab.utils.common import download_file_with_lock
 
 # Letters of the alphabet
 LETTERS = "abcdefghijklmnopqrstuvwxyz"
@@ -119,12 +119,16 @@ class SpellingBee(Task):
     def __init__(self, size=1000, split="train", **kwargs):
         super().__init__(**kwargs)
         assert split in ["train", "test"], "SpellingBee split must be train|test"
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError("size must be a non-negative integer")
         self.size = size
         self.split = split
         filename = WORD_LIST_URL.split("/")[-1]
         word_list_path = download_file_with_lock(WORD_LIST_URL, filename)
         with open(word_list_path, 'r', encoding='utf-8') as f:
-            words = [line.strip() for line in f]
+            words = [line.strip() for line in f if line.strip()]
+        if not words:
+            raise ValueError("Word list must not be empty")
         self.words = words
 
     @property
@@ -222,7 +226,9 @@ Then count the occurrences of '{letter}':
         ref_num = extract_answer(last_text_part)
         pred_num = extract_answer(assistant_response)
         # Compare and return the success as int
-        is_correct = int(pred_num == ref_num)
+        if ref_num is None:
+            raise ValueError("SpellingBee reference must contain a #### answer")
+        is_correct = int(pred_num is not None and pred_num == ref_num)
         return is_correct
 
     def reward(self, conversation, assistant_response):
@@ -307,3 +313,4 @@ if __name__ == "__main__":
     # tokenizer = get_tokenizer()
     # ids, mask = tokenizer.render_conversation(ex)
     # print(tokenizer.visualize_tokenization(ids, mask, with_token_id=True))
+
