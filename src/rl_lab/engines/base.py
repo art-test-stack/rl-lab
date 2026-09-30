@@ -3,7 +3,7 @@
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Sequence, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Sequence, TypedDict
 
 if TYPE_CHECKING:
     import torch
@@ -27,8 +27,9 @@ class ChatPrompt:
 ModelInput = str | TextPrompt | ChatPrompt
 
 
-# (text, prompt token count, completion token count)
-Generation = tuple[str, int | None, int | None]
+# (text, prompt token count, completion token count, generated token IDs)
+Generation = tuple[str, int | None, int | None, list[int] | None]
+GenerationOutput = tuple[list[Generation], Any | None]
 
 
 @dataclass(frozen=True)
@@ -53,12 +54,13 @@ class CompletionEngine(ABC):
         input_ids: "torch.Tensor | list[int] | list[list[int]]",
         attention_mask: "torch.Tensor | list[int] | list[list[int]]",
         *,
+        past_key_values: Any | None = None,
         max_new_tokens: int = 51,
         temperature: float = 0.0,
         top_p: float = 1.0,
         stop: Sequence[str] | None = None,
-    ) -> list[Generation]:
-        """Generate one completion for each row of token IDs."""
+    ) -> GenerationOutput:
+        """Generate completions and return an updated backend cache, if supported."""
 
     def close(self) -> None:
         """Release adapter-owned references/resources, never trainer resources."""

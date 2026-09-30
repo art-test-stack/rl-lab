@@ -69,9 +69,10 @@ def test_runner_integration(dataset, tokenizer):
                     f"The correct answer is ({task[self.position + i]['messages'][-1]['content']})",
                     None,
                     None,
+                    None,
                 )
                 for i in range(len(input_ids))
             ]
             self.position += len(input_ids)
-            return outputs
+            return outputs, None
     assert evaluate_task(task, Engine()).score == 1.0

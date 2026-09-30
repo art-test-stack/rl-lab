@@ -18,11 +18,11 @@ def create_engine(
 ) -> CompletionEngine:
     if backend not in {"transformers", "vllm", "sglang"}:
         raise ValueError(f"Unknown engine {backend!r}; choose transformers, vllm or sglang")
+    if backend in {"vllm", "sglang"}:
+        raise NotImplementedError(f"The {backend} engine is not implemented yet")
     if model is not None:
         if model_name is not None:
             raise ValueError("Pass model or model_name, not both")
-        if backend != "transformers":
-            raise ValueError("Only transformers can attach to a live model")
         if tokenizer is None:
             raise ValueError("An attached model requires its tokenizer")
         if kwargs:
@@ -40,15 +40,7 @@ def create_engine(
         from .transformers import TransformersEngine
 
         return TransformersEngine.load(model_name, **kwargs)
-    if backend == "vllm":
-        from .vllm import VLLMEngine
-
-        return VLLMEngine(model_name, **kwargs)
-
-    if backend == "sglang":
-        from .sglang import SGLangEngine
-
-        return SGLangEngine(model_name, **kwargs)
+    raise AssertionError("validated backend must have been handled")
 
 
 class EngineRouter:
@@ -59,11 +51,9 @@ class EngineRouter:
         kwargs = {}
         if config.tensor_parallel_size < 1:
             raise ValueError("tensor_parallel_size must be positive")
-        if config.backend in {"transformers", "vllm", "sglang"}:
+        if config.backend == "transformers":
             kwargs["dtype"] = config.dtype
-        if config.backend in {"vllm", "sglang"}:
-            kwargs["tensor_parallel_size"] = config.tensor_parallel_size
-        elif config.tensor_parallel_size != 1:
+        if config.backend == "transformers" and config.tensor_parallel_size != 1:
             raise ValueError(
                 "tensor_parallel_size is only supported by the vllm and sglang factories"
             )

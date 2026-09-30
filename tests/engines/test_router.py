@@ -15,7 +15,6 @@ def test_factory_attaches_without_loading(model, tokenizer):
         ("missing", {}, "Unknown"),
         ("transformers", {}, "model_name"),
         ("transformers", {"model": object()}, "tokenizer"),
-        ("vllm", {"model": object()}, "Only transformers"),
         ("transformers", {"model": object(), "model_name": "name"}, "not both"),
         ("transformers", {"tokenizer": object()}, "only accepted"),
         (
@@ -35,3 +34,9 @@ def test_legacy_config_does_not_ignore_options():
         EngineRouter.create(
             EngineConfig("transformers", "model", tensor_parallel_size=2)
         )
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_unimplemented_backends_raise_not_implemented(backend):
+    with pytest.raises(NotImplementedError, match="not implemented"):
+        create_engine(backend, model_name="model")

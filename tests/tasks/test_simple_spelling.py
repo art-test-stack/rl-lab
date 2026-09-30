@@ -39,7 +39,7 @@ def test_runner(words, tokenizer):
         def generate(self, input_ids, attention_mask, **kwargs):
             expected = [task[self.position + i]["messages"][-1]["content"] for i in range(len(input_ids))]
             self.position += len(input_ids)
-            return [(value, None, None) for value in expected]
+            return ([(value, None, None, None) for value in expected], None)
     assert evaluate_task(task, SpellEngine(), batch_size=3).score == 1
 
 

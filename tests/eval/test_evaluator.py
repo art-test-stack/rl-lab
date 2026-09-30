@@ -34,7 +34,7 @@ class FakeEngine(CompletionEngine):
 
     def generate(self, input_ids, attention_mask, **kwargs):
         self.batches.append((input_ids.tolist(), attention_mask.tolist()))
-        return [("correct", None, None) for _ in input_ids]
+        return ([("correct", None, None, None) for _ in input_ids], None)
 
     def close(self):
         self.closed = True
@@ -124,7 +124,7 @@ def test_system_conflict_and_chat_capability():
 def test_output_count_mismatch():
     class Broken(FakeEngine):
         def generate(self, input_ids, attention_mask, **kwargs):
-            return []
+            return [], None
 
     task = Examples([dict(row(), letters=["A", "B"])])
     with pytest.raises(RuntimeError, match="unexpected number"):
@@ -157,9 +157,9 @@ def test_gsm8k_generation_scoring(monkeypatch):
         {"question": "What is 2 + 2?", "answer": "2+2=<<2+2=4>>4\n#### 4"},
     ]))
     engine = FakeEngine()
-    engine.generate = lambda input_ids, attention_mask, **kwargs: [
-        ("#### 4", None, None) for _ in input_ids
-    ]
+    engine.generate = lambda input_ids, attention_mask, **kwargs: (
+        [("#### 4", None, None, None) for _ in input_ids], None
+    )
     assert evaluate_task(gsm8k.GSM8K("main", "test"), engine).score == 1
 
 def test_runner_with_real_attached_engine(model, tokenizer):

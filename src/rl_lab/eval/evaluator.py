@@ -129,7 +129,7 @@ def evaluate_task(
         if tokenizer is None:
             raise ValueError("Generative evaluation requires a tokenizer")
         input_ids, attention_mask = _encode_batch(tokenizer, prompts)
-        outputs = engine.generate(
+        outputs, _ = engine.generate(
             input_ids,
             attention_mask,
             max_new_tokens=max_new_tokens,

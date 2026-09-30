@@ -103,7 +103,7 @@ def main():
             print0("\nConditioned samples:")
             for prompt in prompts:
                 batch = tokenizer(prompt, return_tensors="pt").to(device)
-                sample = engine.generate(
+                sample, _ = engine.generate(
                     batch.input_ids, batch.attention_mask, max_new_tokens=16
                 )
                 sample_str = sample[0][0]
@@ -113,7 +113,7 @@ def main():
 
             print0("\nUnconditioned samples:")
             batch = tokenizer("", return_tensors="pt").to(device)
-            uncond = engine.generate(
+            uncond, _ = engine.generate(
                 batch.input_ids, batch.attention_mask,
                 max_new_tokens=128, temperature=1.0,
             )
