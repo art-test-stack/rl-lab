@@ -58,8 +58,8 @@ and `skip_tokenizer_init=True` are unsupported. Chat needs a configured template
 Batches preserve order and request one non-streaming result per input. Stops are
 passed to SGLang and trimmed defensively. Token usage comes from `meta_info`;
 missing prompt counts fall back to the input length and missing completion counts
-remain `None`. Reported counts can include stop/EOS tokens. Continuation likelihood
-scoring is not implemented and `require("loglikelihood")` fails explicitly.
+remain `None`. Reported counts can include stop/EOS tokens. The active engine API
+currently supports generation only; categorical candidate scoring is deferred.
 
 Use a dedicated process/job: the upstream runtime starts child processes and its
 public `shutdown()` may terminate descendants of the current process. Do not share
