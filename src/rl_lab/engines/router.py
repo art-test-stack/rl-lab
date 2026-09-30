@@ -16,8 +16,8 @@ class EngineConfig:
 def create_engine(
     backend: str, *, model=None, model_name: str | None = None, tokenizer=None, **kwargs
 ) -> CompletionEngine:
-    if backend not in {"transformers", "vllm"}:
-        raise ValueError(f"Unknown engine {backend!r}; choose transformers or vllm")
+    if backend not in {"transformers", "vllm", "sglang"}:
+        raise ValueError(f"Unknown engine {backend!r}; choose transformers, vllm or sglang")
     if model is not None:
         if model_name is not None:
             raise ValueError("Pass model or model_name, not both")
@@ -45,6 +45,11 @@ def create_engine(
 
         return VLLMEngine(model_name, **kwargs)
 
+    if backend == "sglang":
+        from .sglang import SGLangEngine
+
+        return SGLangEngine(model_name, **kwargs)
+
 
 class EngineRouter:
     """Compatibility entry point for the initial configuration-based factory."""
@@ -54,12 +59,13 @@ class EngineRouter:
         kwargs = {}
         if config.tensor_parallel_size < 1:
             raise ValueError("tensor_parallel_size must be positive")
-        if config.backend in {"transformers", "vllm"}:
+        if config.backend in {"transformers", "vllm", "sglang"}:
             kwargs["dtype"] = config.dtype
-        if config.backend == "vllm":
+        if config.backend in {"vllm", "sglang"}:
             kwargs["tensor_parallel_size"] = config.tensor_parallel_size
         elif config.tensor_parallel_size != 1:
             raise ValueError(
-                "tensor_parallel_size is only supported by the vllm factory"
+                "tensor_parallel_size is only supported by the vllm and sglang factories"
             )
         return create_engine(config.backend, model_name=config.model, **kwargs)
+
