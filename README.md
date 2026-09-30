@@ -63,6 +63,9 @@ outputs = engine.generate(
 print(outputs[0][0])
 ```
 
+Each result is `(text, prompt_tokens, completion_tokens)`; a backend may return
+`None` for either count when it cannot report it.
+
 Construction with an existing model and tokenizer does not copy weights or move
 the model. Generation runs without autograd, switches the model to eval mode,
 then restores its top-level train/eval flag. Closing the adapter only drops its
@@ -79,7 +82,7 @@ thread-safe against concurrent training or generation on that same object.
 ### Load a standalone model
 
 ```python
-from rl_lab.engines import create_engine, LogLikelihoodRequest
+from rl_lab.engines import create_engine
 
 engine = create_engine("transformers", model_name="your-model", device="cuda")
 inputs = engine.tokenizer(["A raw completion prompt"], return_tensors="pt")
@@ -87,8 +90,6 @@ outputs = engine.generate(
     inputs.input_ids, inputs.attention_mask,
     max_new_tokens=64, temperature=0.0, stop=["END"],
 )
-engine.require("loglikelihood")
-scores = engine.loglikelihood([LogLikelihoodRequest("The answer is", " A")])
 ```
 
 `generate()` accepts token IDs and an attention mask; tokenize and render chat
@@ -102,12 +103,8 @@ uses its runtime's decoding defaults. Token usage reflects backend-consumed
 counts, which can include termination tokens; counts are not guaranteed to be
 identical across backends. Greedy generation is selected by `temperature=0`.
 
-Likelihood scoring uses joint context/continuation tokenization, moves trailing
-context whitespace into the continuation, adds no EOS, and sums natural-log
-probabilities only over continuation tokens. Empty contexts use BOS (or EOS).
-Boundaries that still split a token fail explicitly instead of silently scoring
-a different continuation. This reference implementation scores requests one at
-a time and does not truncate overlong contexts.
+The evaluator currently supports generation-based tasks. Categorical candidate
+scoring is deferred until it is needed by on-policy methods.
 
 ### Offline vLLM
 
@@ -132,11 +129,11 @@ from rl_lab.engines import create_engine
 engine = create_engine("vllm", model_name="your-model", tensor_parallel_size=1)
 ```
 
-| Backend | Generation/chat | Continuation likelihood | Reuses live training model |
-| --- | --- | --- | --- |
-| Transformers | Yes | Yes | Yes |
-| Offline vLLM | Yes | Not yet | No |
-| Offline SGLang | Yes | Not yet | No |
+| Backend | Generation/chat | Reuses live training model |
+| --- | --- | --- |
+| Transformers | Yes | Yes |
+| Offline vLLM | Yes | No |
+| Offline SGLang | Yes | No |
 
 Offline vLLM cleanup follows the runtime's object/process lifetime; `close()`
 drops the adapter reference, without private shutdown calls or global distributed
@@ -169,7 +166,7 @@ uv run --locked pytest
 The GitHub Actions worker runs the same locked setup on Python 3.14 for pull
 requests and pushes to `main`, and uploads a JUnit report. Tests create a tiny
 random GPT-2 and a tokenizer locally, run on CPU with Hub access disabled, and
-cover attachment, restoration after errors, batching, stop handling, likelihoods,
+cover attachment, restoration after errors, batching, stop handling,
 local checkpoint loading, factory validation and capabilities. vLLM calls are
 mocked; real GPU integration runs remain separate from this CI suite.
 
@@ -191,19 +188,17 @@ result = evaluate_task(
 print(result.num_examples, result.score)
 ```
 
-Tasks define `build_eval_input(example)`, `evaluation_candidates(example)` and
-`evaluate(example, completion)`. The default prompt hook removes the final
+Tasks define `build_eval_input(example)` and `evaluate(example, completion)`. The default prompt hook removes the final
 assistant reference; subclasses can return `TextPrompt` for raw completions.
 The runner owns batching and returns the arithmetic mean of scalar task scores.
 It neither creates nor closes the engine, and does not change training ownership.
 
-Generative tasks use one completion per example. Categorical tasks (e.g. MMLU
-and ARC) score all candidates in an example batch using summed continuation log
-likelihoods, without length normalization. They require a likelihood-capable
-engine (currently Transformers); chat inputs additionally require chat support.
-Ties choose the first candidate. `limit` selects the first examples of the task's
-existing view. A supplied `system_prompt` is only valid for chat prompts without
-an existing system message. No input conversations are modified.
+The runner currently supports generative tasks, using one completion per example.
+Categorical task definitions remain in the repository, but evaluation rejects
+them until candidate scoring is needed. Chat inputs require chat support.
+`limit` selects the first examples of the task's existing view. A supplied
+`system_prompt` is only valid for chat prompts without an existing system
+message. No input conversations are modified.
 
 Training-only datasets, CORE's specialized scoring and agentic environment
 benchmarks need their own evaluation protocols. This runner is single-process;
