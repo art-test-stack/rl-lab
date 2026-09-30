@@ -134,6 +134,18 @@ class DistributedContext:
     def is_distributed(self) -> bool:
         return self.mesh is not None
 
+    @property
+    def dp_rank(self) -> int:
+        if self.mesh is None:
+            return 0
+        return self.mesh["dp"].get_rank()
+
+    @property
+    def dp_mesh(self) -> DeviceMesh | None:
+        if self.mesh is None:
+            return
+        return self.mesh["dp"]
+
 
 def cleanup_dist_groups():
     if is_ddp_initialized():

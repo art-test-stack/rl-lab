@@ -1,5 +1,5 @@
 import os, shutil
-from datetime import datetime
+import datetime
 from .common import get_banner, print0, run_command
 from .system import get_git_info, get_gpu_info, get_system_info, estimate_cost
 # Source - https://stackoverflow.com/a/45846841

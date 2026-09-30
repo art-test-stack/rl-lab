@@ -7,7 +7,7 @@ TODOs:
 - All tasks ~match except for squad. We get 31% reference is 37%. Figure out why.
 """
 
-import os, csv, time, json, yaml, shutil, random, zipfile, tempfile, argparse
+import os, csv, time, json, yaml, shutil, random, zipfile, tempfile
 
 from jinja2 import Template
 import torch
@@ -15,7 +15,6 @@ import torch.distributed as dist
 
 from rl_lab.utils.default import DATA_DIR
 from rl_lab.utils.common import print0, download_file_with_lock
-from gpt_lab.tokenizer import Tokenizer, TokenizerConfig
 
 # -----------------------------------------------------------------------------
 # Prompt rendering utilities
@@ -118,7 +117,7 @@ def stack_sequences(tokens, pad_token_id):
 
 def batch_sequences_mc(tokenizer, prompts):
     # In multiple choice, contexts are the same but the continuation is different (common prefix)
-    tokens = tokenizer(prompts, prepend=tokenizer.get_bos_token_id())
+    tokens = tokenizer(prompts, prepend=tokenizer.get_bos_token_id())["input_ids"]
     # figure out the start and end of each continuation
     answer_start_idx = find_common_length(tokens, direction='left')
     start_indices = [answer_start_idx] * len(prompts)
@@ -128,7 +127,7 @@ def batch_sequences_mc(tokenizer, prompts):
 
 def batch_sequences_schema(tokenizer, prompts):
     # In schema tasks, contexts vary but continuation is the same (common suffix)
-    tokens = tokenizer(prompts, prepend=tokenizer.get_bos_token_id())
+    tokens = tokenizer(prompts, prepend=tokenizer.get_bos_token_id())["input_ids"]
     # figure out the start and end of each context
     suffix_length = find_common_length(tokens, direction='right')
     end_indices = [len(x) for x in tokens]
@@ -138,7 +137,7 @@ def batch_sequences_schema(tokenizer, prompts):
 
 def batch_sequences_lm(tokenizer, prompts):
     # In LM tasks, we have two prompts: without and with continuation
-    tokens = tokenizer(prompts, prepend=tokenizer.get_bos_token_id())
+    tokens = tokenizer(prompts, prepend=tokenizer.get_bos_token_id())["input_ids"]
     tokens_without, tokens_with = tokens
     start_idx, end_idx = len(tokens_without), len(tokens_with)
     assert start_idx < end_idx, "prompt without is supposed to be a prefix of prompt with"
@@ -223,7 +222,7 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
         tokens, start_idxs, end_idxs = new_tokens, new_start_idxs, new_end_idxs
 
     # Stack up all the sequences into a batch
-    pad_token_id = tokenizer.get_bos_token_id() # use BOS as pad token is ok
+    pad_token_id = tokenizer.get_pad_token_id() # use BOS as pad token is ok
     input_ids = stack_sequences(tokens, pad_token_id)
     input_ids = input_ids.to(device)
 
@@ -296,25 +295,6 @@ class ModelWrapper:
     def get_device(self):
         return next(self.model.parameters()).device
 
-
-def load_hf_model(hf_path: str, device):
-    """Load a HuggingFace model and tokenizer."""
-    print0(f"Loading HuggingFace model from: {hf_path}")
-    from transformers import AutoModelForCausalLM
-    model = AutoModelForCausalLM.from_pretrained(hf_path)
-    model.to(device)
-    model.eval()
-    max_seq_len = 1024 if "gpt2" in hf_path else None
-    model = ModelWrapper(model, max_seq_len=max_seq_len)
-    tokconfig = TokenizerConfig(
-        name=hf_path,
-        source="huggingface",
-        vocab_size=model.vocab_size,
-        pat_str=None,
-        special_tokens=None
-    )
-    tokenizer = Tokenizer.from_config(config=tokconfig)
-    return model, tokenizer
 
 COLS = {
     "id": 4,
