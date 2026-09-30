@@ -3,8 +3,6 @@
 `SpellingBee(size=1000, split="test")` generates letter-counting conversations.
 The implementation follows the existing [nanochat task](https://github.com/karpathy/nanochat/blob/a5a3a33c63f996c56c0976d45ea47239b3fd74ae/tasks/spellingbee.py)
 and uses [dwyl's word list](https://github.com/dwyl/english-words/blob/master/words_alpha.txt).
-The dependency on nanochat is removed; the rl-lab download helper now also
-creates a fresh cache directory before locking/downloading.
 
 Examples are deterministic by physical index, with separate train/test random
 seeds. These are different generated examples, not disjoint word vocabularies.
