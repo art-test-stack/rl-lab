@@ -11,9 +11,13 @@ from .base import (
     ModelInput,
     TextPrompt,
 )
+from .async_base import AsyncCompletionEngine
+from .async_router import create_async_engine
 from .router import EngineConfig, EngineRouter, create_engine
 
 __all__ = [
+    "AsyncCompletionEngine",
+    "create_async_engine",
     "ChatPrompt",
     "CompletionEngine",
     "EngineCapabilities",
@@ -27,3 +31,4 @@ __all__ = [
     "TextPrompt",
     "create_engine",
 ]
+

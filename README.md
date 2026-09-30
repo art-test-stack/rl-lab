@@ -107,6 +107,15 @@ Boundaries that still split a token fail explicitly instead of silently scoring
 a different continuation. This reference implementation scores requests one at
 a time and does not truncate overlong contexts.
 
+### Async llm-d gateway
+
+Connect to an existing llm-d deployment with
+`create_async_engine("llmd", model_name="served-model", base_url="https://gateway/v1")`.
+Await `engine.generate(...)` and `engine.aclose()`, or use `async with engine`.
+This is a separate async interface; synchronous evaluators require an async
+runner before they can use it. No deployment or model is started locally.
+See [llm-d usage and limitations](docs/engines/llmd.md).
+
 ### Offline vLLM
 
 vLLM is optional and absent from the base lock. This project currently requires
@@ -152,4 +161,5 @@ random GPT-2 and a tokenizer locally, run on CPU with Hub access disabled, and
 cover attachment, restoration after errors, batching, stop handling, likelihoods,
 local checkpoint loading, factory validation and capabilities. vLLM calls are
 mocked; real GPU integration runs remain separate from this CI suite.
+
 

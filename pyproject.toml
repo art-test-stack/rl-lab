@@ -11,6 +11,9 @@ dependencies = [
     "transformers>=5.17.0",
 ]
 
+[project.optional-dependencies]
+llmd = ["httpx>=0.28.1"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -24,4 +27,5 @@ dev = [
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "--strict-config --strict-markers"
+
 
