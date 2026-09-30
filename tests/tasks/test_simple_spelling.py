@@ -1,6 +1,6 @@
 import pytest
 
-from rl_lab.engines import CompletionEngine, EngineCapabilities, Generation
+from rl_lab.engines import CompletionEngine, EngineCapabilities
 from rl_lab.eval import evaluate_task
 from rl_lab.tasks import spellingbee
 
@@ -39,7 +39,7 @@ def test_runner(words, tokenizer):
         def generate(self, input_ids, attention_mask, **kwargs):
             expected = [task[self.position + i]["messages"][-1]["content"] for i in range(len(input_ids))]
             self.position += len(input_ids)
-            return [Generation(value) for value in expected]
+            return ([(value, None, None, None) for value in expected], None)
     assert evaluate_task(task, SpellEngine(), batch_size=3).score == 1
 
 

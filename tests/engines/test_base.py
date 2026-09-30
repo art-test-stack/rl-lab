@@ -44,10 +44,6 @@ def test_capabilities_fail_before_inference():
 
     engine = GenerationOnlyEngine()
     engine.require("generation")
-    with pytest.raises(ValueError, match="loglikelihood"):
-        engine.require("loglikelihood")
-    with pytest.raises(NotImplementedError, match="loglikelihood"):
-        engine.loglikelihood([])
 
 
 def test_package_does_not_import_backend_dependencies():

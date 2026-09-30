@@ -36,10 +36,7 @@ class TokenizerWrapper:
         return self.pad_token_id
     
     def __getattr__(self, name):
-        selfattr = getattr(self, name, None)
-        if selfattr is None:
-            return getattr(self.main, name)
-        return selfattr
+        return getattr(self.main, name)
 
     def __call__(self, *args, **kwds):
         output = self.main(*args, **kwds)
@@ -102,26 +99,26 @@ def main():
                 "My favorite color is",
                 "If 5*x + 3 = 13, then x is",
             ]
-            engine = TransformersEngine(model, tokenizer, batch_size=8)
+            engine = TransformersEngine(model, tokenizer)
             print0("\nConditioned samples:")
             for prompt in prompts:
                 batch = tokenizer(prompt, return_tensors="pt").to(device)
-                sample = engine.generate(
+                sample, _ = engine.generate(
                     batch.input_ids, batch.attention_mask, max_new_tokens=16
                 )
-                sample_str = sample[0].text
+                sample_str = sample[0][0]
                 print0("-" * 80)
                 print0(sample_str)
                 samples.append(sample_str)
 
             print0("\nUnconditioned samples:")
             batch = tokenizer("", return_tensors="pt").to(device)
-            uncond = engine.generate(
+            uncond, _ = engine.generate(
                 batch.input_ids, batch.attention_mask,
                 max_new_tokens=128, temperature=1.0,
             )
             for sample in uncond:
-                sample_str = sample.text
+                sample_str = sample[0]
                 print0("-" * 80)
                 print0(sample_str)
                 unconditioned_samples.append(sample_str)
