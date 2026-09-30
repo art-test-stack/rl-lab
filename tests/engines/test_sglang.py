@@ -67,14 +67,14 @@ def test_generation_token_ids_order_stops_and_usage(backend, tokenizer, encode_i
     with module.SGLangEngine("model") as engine:
         ids, mask = encode_inputs(tokenizer, "hello", chat, TextPrompt("world"))
         out = engine.generate(ids, mask, max_new_tokens=9, top_p=0.8, stop=["END"])
-        assert [o.text for o in out] == ["answer 0 ", "answer 1 ", "answer 2 "]
+        assert [o[0] for o in out] == ["answer 0 ", "answer 1 ", "answer 2 "]
         args = calls["generate"][0]
         assert args["input_ids"] == [[4], [1, 4, 6], [5]]
         assert args["sampling_params"] == {"n": 1, "max_new_tokens": 9, "temperature": 0.0, "top_p": 0.8,
             "top_k": -1, "stop": ["END"], "skip_special_tokens": True, "no_stop_trim": False}
         assert args["stream"] is False
-        assert [o.prompt_tokens for o in out] == [len(ids) for ids in args["input_ids"]]
-        assert [o.completion_tokens for o in out] == [5, 5, 5]
+        assert [o[1] for o in out] == [len(ids) for ids in args["input_ids"]]
+        assert [o[2] for o in out] == [5, 5, 5]
         assert engine.generate([], []) == []
         assert len(calls["generate"]) == 1
     assert calls["shutdown"] == 1
@@ -89,8 +89,7 @@ def test_single_result_and_missing_usage(backend):
     with module.SGLangEngine("model") as engine:
         engine.llm.output = {"text": "answer"}
         out = engine.generate([4], [1])[0]
-        assert out.text == "answer" and out.prompt_tokens == 1
-        assert out.completion_tokens is None
+        assert out == ("answer", 1, None)
 
 
 def test_empty_token_row_is_rejected(backend):

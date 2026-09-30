@@ -43,8 +43,8 @@ def test_vllm_offline_mapping_and_close(vllm_backend, tokenizer, encode_inputs):
     inputs, params = llm.generate.call_args.args
     assert inputs == [{"prompt_token_ids": [4]}, {"prompt_token_ids": [1, 4, 6]}]
     assert params.max_tokens == 5 and params.temperature == 0 and params.stop == ["END"]
-    assert [o.text for o in outputs] == ["world", "A"]
-    assert outputs[0].completion_tokens == 2
+    assert [output[0] for output in outputs] == ["world", "A"]
+    assert outputs[0][2] == 2
     assert engine.generate([], []) == []
     engine.close()
     engine.close()
@@ -55,5 +55,5 @@ def test_vllm_offline_mapping_and_close(vllm_backend, tokenizer, encode_inputs):
 
 def test_vllm_rejects_borrowed_model(vllm_backend):
     module, _ = vllm_backend
-    with pytest.raises(TypeError, match="attach"):
+    with pytest.raises(TypeError, match="needs a model name/path"):
         module.VLLMEngine(object())
