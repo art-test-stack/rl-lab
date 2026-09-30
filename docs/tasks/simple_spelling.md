@@ -13,7 +13,4 @@ The target format is `word:w,o,r,d`. Scoring is exact match after trimming only
 surrounding whitespace; `reward` returns the same result as a float. This scoring
 rule is an rl-lab addition to the upstream training task, not an official external
 benchmark metric. Word order, train/test seeds and sliced views stay deterministic.
-The train/test generators share a vocabulary and differ in example seeds.
-
-Depends on the SpellingBee PR's removal of the unavailable nanochat import.
-Tests use temporary word lists and an offline fake generation engine.
+The train/test generators share a vocabulary and may differ in example seeds.
