@@ -155,27 +155,24 @@ def forward_model(model, input_ids):
     batch_size, seq_len = input_ids.size()
     # Roll the tensor to the left by one position to get the (autoregressive) target ids
     target_ids = torch.roll(input_ids, shifts=-1, dims=1)
-    # outputs = model(input_ids, target_ids, reduction='none').logits # (B, Seq, V)
-    # 
-    # # Calculate cross entropy at all positions
-    # losses = torch.nn.functional.cross_entropy(
-    #     outputs.view(batch_size * seq_len, -1),
-    #     target_ids.view(batch_size * seq_len),
-    #     reduction='none'
-    # ).view(batch_size, seq_len)
-    outputs = model(input_ids, target_ids, reduction='none') # (B, Seq) NATs
-    losses = outputs.loss.view(batch_size, seq_len) # (B, Seq, V)
+    outputs = model(input_ids=input_ids, use_cache=False)
+    logits = outputs.logits
+    losses = torch.nn.functional.cross_entropy(
+        logits.reshape(-1, logits.size(-1)),
+        target_ids.reshape(-1),
+        reduction='none',
+    ).view(batch_size, seq_len)
 
     # Set the last column to be nan because there is no autoregressive loss there
     losses[:, -1] = float('nan')
     # Get the argmax predictions at each position
-    predictions = outputs.logits.argmax(dim=-1)
+    predictions = logits.argmax(dim=-1)
     return losses, predictions
 
 
 @torch.no_grad()
 def evaluate_example(idx, model, tokenizer, data, device, task_meta):
-    """Evaluate a single example, return True if correct, False otherwise"""
+    """Evaluate a single example, return True if correct, False otherwise."""
     item = data[idx]
     task_type = task_meta['task_type']
     num_fewshot = task_meta['num_fewshot']
@@ -332,7 +329,7 @@ def place_eval_bundle(file_path):
 def evaluate_core(model, tokenizer, device, max_per_task=-1):
     """
     Evaluate a base model on the CORE benchmark.
-    Returns dict with results, centered_results, and core_metric.
+    Returns aggregate core/* metrics and detailed per-task all_core_results.
     """
     base_dir = DATA_DIR / "core"
     eval_bundle_dir = os.path.join(base_dir, "eval_bundle")
@@ -372,14 +369,6 @@ def evaluate_core(model, tokenizer, device, max_per_task=-1):
             'num_fewshot': task['num_fewshot'][0],
             'continuation_delimiter': task.get('continuation_delimiter', ' ')
         }
-        print0(
-            f"{i:^{COLS['id']}} | "
-            f"{label:^{COLS['task']}} | "
-            f"{task_meta['task_type']:^{COLS['type']}} | "
-            f"{(str(task_meta['num_fewshot']) + '-shot'):^{COLS['fewshot']}} |",
-            end=""
-        )
-
         data_path = os.path.join(data_base_path, task_meta['dataset_uri'])
         with open(data_path, 'r', encoding='utf-8') as f:
             data = [json.loads(line.strip()) for line in f]
@@ -389,6 +378,14 @@ def evaluate_core(model, tokenizer, device, max_per_task=-1):
         shuffle_rng.shuffle(data)
         if max_per_task > 0:
             data = data[:max_per_task]
+
+        print0(
+            f"{i:^{COLS['id']}} | "
+            f"{label:^{COLS['task']}} | "
+            f"{task_meta['task_type']:^{COLS['type']}} | "
+            f"{(str(task_meta['num_fewshot']) + '-shot'):^{COLS['fewshot']}} |",
+            end=""
+        )
 
         accuracy = evaluate_task(model, tokenizer, data, device, task_meta)
         random_baseline = random_baselines[label]
