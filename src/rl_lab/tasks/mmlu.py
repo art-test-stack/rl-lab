@@ -60,3 +60,7 @@ class MMLU(Task):
         assert assistant_response in self.letters, f"MMLU answer {assistant_response} is expected to be one of {self.letters}"
         assistant_message = conversation['messages'][-1]['content'] # e.g. "A"
         return assistant_response == assistant_message
+
+    def reward(self, conversation, assistant_response):
+        """Return binary correctness as a float, using the evaluation scorer."""
+        return float(self.evaluate(conversation, assistant_response))

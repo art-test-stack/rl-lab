@@ -97,3 +97,7 @@ class HumanEval(Task):
         result = execute_code(program)
         success = result.success
         return success
+
+    def reward(self, conversation, completion):
+        """Return 1.0 if the completion passes the tests, otherwise 0.0."""
+        return float(self.evaluate(conversation, completion))
