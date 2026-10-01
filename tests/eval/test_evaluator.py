@@ -82,6 +82,45 @@ def test_mean_score_and_limit_larger_than_dataset():
     assert evaluate_task(Examples([row(), row("wrong"), row()]), FakeEngine(), limit=99).score == pytest.approx(2 / 3)
 
 
+def test_callback_writes_wrong_first_report_across_batches(tmp_path, monkeypatch):
+    from rl_lab.eval.report import EvaluationReport
+
+    monkeypatch.chdir(tmp_path)
+    rows = [row(), row("wrong"), row(), row()]
+    rows[0]["messages"][0]["content"] = "First question with choices A/B"
+    rows[1]["messages"][0]["content"] = "Wrong question with ```code```"
+    rows[1]["messages"][-1]["content"] = [
+        {"type": "text", "text": "Reference reasoning"},
+        {"type": "python", "text": "2 + 2"},
+        {"type": "python_output", "text": "4"},
+        {"type": "text", "text": "#### 4"},
+    ]
+    before = deepcopy(rows)
+    report = EvaluationReport("GSM8K", "Qwen/test", {"max_new_tokens": 512})
+    result = evaluate_task(
+        Examples(rows), FakeEngine(), batch_size=2, limit=3,
+        on_result=report.record,
+    )
+    assert result == EvalResult(3, 2 / 3)
+    assert [(index, completion, score) for index, _, completion, score in report.examples] == [
+        (0, "correct", 1.0), (1, "correct", 0.0), (2, "correct", 1.0),
+    ]
+    path = report.write(result)
+    text = path.read_text(encoding="utf-8")
+    assert path.parent.name == "report"
+    assert "Model: Qwen/test" in text
+    assert "Accuracy: 0.6667 | Examples: 3 | Wrong: 1 | Correct: 2" in text
+    assert "- max_new_tokens: 512" in text
+    assert text.index("### Example 2") < text.index("## Correct answers") < text.index("### Example 1")
+    assert "First question with choices A/B" in text
+    assert "````text\nuser:\nWrong question with ```code```\n````" in text
+    assert "Reference reasoning\n[python]\n2 + 2\n[python_output]\n4\n#### 4" in text
+    assert "**Model answer**\n\n```text\ncorrect\n```" in text
+    assert rows == before
+    assert report.write(result) != path  # A new report preserves previous runs.
+    assert path.read_text(encoding="utf-8") == text
+
+
 @pytest.mark.parametrize("kwargs", [{"batch_size": 0}, {"batch_size": True}, {"limit": -1}, {"limit": 1.5}])
 def test_invalid_bounds(kwargs):
     with pytest.raises(ValueError, match="positive integer"):
