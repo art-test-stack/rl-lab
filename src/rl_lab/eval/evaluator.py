@@ -92,6 +92,7 @@ def evaluate_task(
     batch_size: int = 8,
     limit: int | None = None,
     system_prompt: str | None = None,
+    on_result=None,
 ) -> EvalResult:
     """Return the mean per-example score without loading or closing an engine.
 
@@ -99,6 +100,8 @@ def evaluate_task(
     generative tasks only; categorical scoring is deferred. This is not a CORE,
     agentic, pass@k or distributed benchmark runner.
     ``batch_size`` bounds examples per generation batch.
+    Optional ``on_result(index, example, completion, score)`` receives each scored
+    example in task-view order. Callback exceptions propagate to the caller.
     """
     _positive_integer("batch_size", batch_size)
     if limit is not None:
@@ -140,9 +143,11 @@ def evaluate_task(
         if len(outputs) != len(examples):
             raise RuntimeError("Engine returned an unexpected number of completions")
         completions = [output[0] for output in outputs]
-        for example, completion in zip(examples, completions, strict=True):
+        for offset, (example, completion) in enumerate(zip(examples, completions, strict=True)):
             score = float(task.evaluate(example, completion))
             if not math.isfinite(score):
                 raise ValueError("Task returned a non-finite score")
             total += score
+            if on_result is not None:
+                on_result(start + offset, example, completion, score)
     return EvalResult(num_examples=count, score=total / count)
