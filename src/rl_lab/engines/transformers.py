@@ -1,9 +1,12 @@
 """Inference on an existing causal LM, or a separately loaded HF model."""
 
-from typing import Sequence
+from copy import deepcopy
+from inspect import signature
+from typing import Callable, Sequence
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers.utils import get_json_schema
 
 from .base import (
     CompletionEngine,
@@ -39,6 +42,130 @@ class TransformersEngine(CompletionEngine):
         return cls(model, tokenizer)
 
     from_pretrained = load
+
+    def complete(
+        self,
+        conversations: Sequence[Sequence[dict]],
+        *,
+        tools: Sequence[Callable] = (),
+        response_template: dict | None = None,
+        max_tool_rounds: int = 4,
+        max_new_tokens: int = 512,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+    ) -> list[list[dict]]:
+        """Complete chats in batch rounds, executing registered Python callables.
+
+        Return copied histories in input order. Only unfinished chats enter the
+        next round. Tool calls run sequentially after the entire batch returns.
+        Each round re-encodes full histories without reusing a generation cache.
+        ``max_new_tokens`` limits each assistant turn; ``max_tool_rounds`` limits
+        tool-bearing turns per chat, followed by one final generation round.
+
+        Parsing uses the supplied response template or the tokenizer's own.
+        The model/chat template must support tool use and end turns with EOS.
+        Truncated turns, malformed responses and exhausted tool rounds raise;
+        unknown tools and callable exceptions become tool error responses.
+        Callables must enforce their own timeouts, as the Python wrapper does.
+        """
+        if self.model is None:
+            raise RuntimeError("Engine is closed")
+        validate_generation_options(max_new_tokens, temperature, top_p, None)
+        if (isinstance(max_tool_rounds, bool)
+                or not isinstance(max_tool_rounds, int) or max_tool_rounds < 0):
+            raise ValueError("max_tool_rounds must be a non-negative integer")
+        if response_template is None:
+            response_template = getattr(self.tokenizer, "response_template", None)
+        if response_template is None:
+            raise ValueError("complete requires a response_template for this tokenizer")
+        tools = list(tools)
+        schemas = [get_json_schema(tool) for tool in tools]
+        registry = {
+            schema["function"]["name"]: tool
+            for schema, tool in zip(schemas, tools, strict=True)
+        }
+        if len(registry) != len(tools):
+            raise ValueError("Tool names must be unique")
+        histories = [deepcopy(list(messages)) for messages in conversations]
+        if any(not messages for messages in histories):
+            raise ValueError("Conversations must contain at least one message")
+        active = list(range(len(histories)))
+        pad = self.tokenizer.pad_token_id
+        if pad is None:
+            pad = self.tokenizer.eos_token_id
+        if pad is None:
+            raise ValueError("complete requires a pad_token_id or eos_token_id")
+        eos = self.model.generation_config.eos_token_id
+        eos_ids = {eos} if isinstance(eos, int) else set(eos or [])
+        if not eos_ids:
+            raise ValueError("complete requires configured EOS token IDs")
+
+        for round_index in range(max_tool_rounds + 1):
+            if not active:
+                break
+            rows = [list(self.tokenizer.apply_chat_template(
+                histories[index], tools=schemas, tokenize=True,
+                add_generation_prompt=True, return_dict=False,
+            )) for index in active]
+            width = max(map(len, rows))
+            if any(not row for row in rows):
+                raise ValueError("Chat template produced an empty prompt")
+            ids = torch.full((len(rows), width), pad, dtype=torch.long)
+            masks = torch.zeros_like(ids)
+            for row_index, row in enumerate(rows):
+                ids[row_index, width - len(row):] = torch.tensor(row)
+                masks[row_index, width - len(row):] = 1
+            outputs, _ = self.generate(
+                ids, masks, max_new_tokens=max_new_tokens,
+                temperature=temperature, top_p=top_p,
+            )
+            parsed = []
+            # Validate every turn before executing any tool in this round.
+            for index, row, output in zip(active, rows, outputs, strict=True):
+                tokens = output[3]
+                if not tokens or tokens[-1] not in eos_ids:
+                    raise RuntimeError(f"Conversation {index}: assistant turn reached token limit")
+                message = self.tokenizer.parse_response(
+                    tokens, schema=response_template, prefix=row, tools=schemas,
+                )
+                if message.get("role") != "assistant":
+                    raise ValueError("Response template must produce an assistant message")
+                calls = message.get("tool_calls", [])
+                if not isinstance(calls, list):
+                    raise ValueError("Parsed tool_calls must be a list")
+                for call in calls:
+                    function = call.get("function") if isinstance(call, dict) else None
+                    if (not isinstance(function, dict)
+                            or not isinstance(function.get("name"), str)
+                            or not isinstance(function.get("arguments"), dict)):
+                        raise ValueError("Parsed tool calls need a function name and argument dict")
+                if calls and round_index == max_tool_rounds:
+                    raise RuntimeError(f"Conversation {index}: max_tool_rounds exceeded")
+                parsed.append(message)
+            continuing = []
+            for index, message in zip(active, parsed, strict=True):
+                histories[index].append(message)
+                calls = message.get("tool_calls", [])
+                if not calls:
+                    continue
+                for call in calls:
+                    function = call["function"]
+                    name, arguments = function["name"], function["arguments"]
+                    try:
+                        if name not in registry:
+                            raise ValueError(f"Unknown tool: {name}")
+                        tool = registry[name]
+                        signature(tool).bind(**arguments)
+                        content = str(tool(**arguments))
+                    except Exception as error:
+                        content = f"{type(error).__name__}: {error}"
+                    result = {"role": "tool", "name": name, "content": content}
+                    if "id" in call:
+                        result["tool_call_id"] = call["id"]
+                    histories[index].append(result)
+                continuing.append(index)
+            active = continuing
+        return histories
 
     def generate(
         self,
