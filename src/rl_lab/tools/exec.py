@@ -24,13 +24,15 @@ accidental destructive behavior, but it is not safe against malicious adversaria
 import contextlib
 import faulthandler
 import io
+import json
+import math
 import multiprocessing
 import os
 import platform
 import signal
 import tempfile
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import asdict, dataclass
+from typing import Callable, Optional
 
 # -----------------------------------------------------------------------------
 
@@ -346,3 +348,35 @@ def execute_code(
         timeout=result_dict["timeout"],
         memory_exceeded=result_dict["memory_exceeded"],
     )
+
+
+def make_python_tool(
+    *, timeout: float = 5.0, maximum_memory_bytes: int = 256 * 1024 * 1024
+) -> Callable[[str], str]:
+    """Create a stateless Python tool with application-controlled execution limits.
+
+    The underlying executor is not a security sandbox. Memory limits are skipped
+    on macOS. Each invocation starts with a fresh namespace.
+    """
+    if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or timeout <= 0):
+        raise ValueError("timeout must be finite and positive")
+    if (isinstance(maximum_memory_bytes, bool)
+            or not isinstance(maximum_memory_bytes, int) or maximum_memory_bytes <= 0):
+        raise ValueError("maximum_memory_bytes must be a positive integer")
+
+    def python(code: str) -> str:
+        """Execute Python code and return JSON containing output or error details.
+
+        Use print() to produce output. Variables do not persist between calls.
+
+        Args:
+            code: Python source code to execute.
+        """
+        if not isinstance(code, str):
+            raise TypeError("code must be a string")
+        return json.dumps(asdict(execute_code(
+            code, timeout=timeout, maximum_memory_bytes=maximum_memory_bytes
+        )))
+
+    return python
