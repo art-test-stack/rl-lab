@@ -3,12 +3,14 @@
 RL-lab is a lightweight, educational project for PyTorch-native post-training
 recipes, using [Transformers](https://github.com/huggingface/transformers).
 
+For the GPT-2 / one-turn SmolTalk training script, see the [SFT recipe](docs/sft.md).
+
 
 ## Target architecture
 
 This diagram describes the intended design, not a list of implemented features.
-Only the Transformers inference adapter is currently implemented; the recipes
-and other backends shown below are planned integrations.
+The Transformers inference adapter and a basic TRL SFT recipe are implemented;
+the other recipes and backends shown below are planned integrations.
 
 ```text
                     ┌─────────────────────┐
