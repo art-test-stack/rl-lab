@@ -86,6 +86,21 @@ pinned by this first recipe; hardware differences can also change results.
 The manifest records the training length limit and model-dependent validation
 context limit separately.
 
+## Training plots
+
+After a run completes, regenerate its figures with:
+
+```bash
+uv run --locked --with matplotlib python scripts/plot_training.py report/sft-gpt2-m2
+```
+
+Replace the directory with any completed SFT run. The script reads its saved JSON
+logs and writes `training-overview` and `training-diagnostics` in PNG and PDF
+formats under that run's `plots/` directory. Re-running replaces those figures.
+Step axes adapt to the logged run; missing optional metrics are labeled
+"Not logged". Matplotlib is provided temporarily by `uv --with`, without changing
+the project's dependency files.
+
 ## Offline compatibility check
 
 ```bash
