@@ -159,4 +159,39 @@ message. No input conversations are modified.
 Training-only datasets, CORE's specialized scoring and agentic environment
 benchmarks need their own evaluation protocols. This runner is single-process;
 it does not implement distributed aggregation, pass@k or benchmark-specific
-macro averages. There is no evaluation CLI.
+macro averages.
+
+### Compare models and checkpoints
+
+Use [scripts/eval/compare.py](scripts/eval/compare.py) to evaluate models before
+and after post-training, or compare any named models on the same task examples:
+
+```bash
+uv run --locked --with matplotlib python -m scripts.eval.compare \
+  --model 'GPT-2 (before SFT)=openai-community/gpt2' \
+  --model 'GPT-2 (after SFT)=report/sft-gpt2-m2' \
+  --model 'Qwen2.5-1.5B-Instruct=Qwen/Qwen2.5-1.5B-Instruct' \
+  --tasks gsm8k,mmlu \
+  --max-per-task 16 --max-new-tokens 512 \
+  --device-type mps \
+  --output-dir report/gpt2-sft-comparison
+```
+
+Each `--model` is `LABEL=MODEL_OR_CHECKPOINT`; labels are arbitrary. Omit the
+before-training model if it is not needed, and add more models as baselines.
+Models load sequentially. Use `cpu` or `cuda` instead of `mps` as appropriate,
+and choose a new, empty output directory for each run.
+
+Omit `--tasks`, or pass `--tasks None` or `--tasks all`, to run all implemented
+scored benchmarks. Tasks without a scorer are excluded. When CORE is selected,
+`--max-per-task` must be at least 11 or `-1` for the full dataset. The default
+limit is `-1`; start with explicit tasks and a small limit for a laptop run.
+
+The output directory contains `evaluation.json` with scores and settings,
+per-model/task JSONL files with examples, references and predictions, and
+`plots/` with one PNG/PDF accuracy bar plot per task. CORE exposes aggregate
+results only and gets a plot for each constituent task. The script reuses the
+suite's generation, categorical and CORE scoring protocols.
+
+See [evaluation documentation](docs/task-evaluation-scripts.md) for supported
+tasks, prompting conventions and evaluation limits.
