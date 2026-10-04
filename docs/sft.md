@@ -66,6 +66,9 @@ and their existing scorers, with one greedy completion per example and no extra
 system prompt. They measure separate capabilities, not conversational quality.
 Oversized benchmark prompts raise an error rather than being truncated.
 
+Sample replies in `evaluation.json` use `prompt`, `reference` (the dataset answer),
+and `generated` (the model reply). Dataset exports retain TRL's `completion` field.
+
 After training, generation evaluations reload the model and tokenizer from the
 saved output directory. SmolTalk loss uses the trainer's trained weights.
 

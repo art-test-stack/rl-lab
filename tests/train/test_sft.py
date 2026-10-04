@@ -132,3 +132,6 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
         assert math.isfinite(results[phase]["smoltalk_loss"])
         assert results[phase]["tasks"]["gsm8k"] == {"num_examples": 1, "score": 0.0}
         assert len(results[phase]["tasks"]["smoltalk"]["samples"]) == 2
+        for sample, example in zip(results[phase]["tasks"]["smoltalk"]["samples"], validation):
+            assert set(sample) == {"prompt", "reference", "generated"}
+            assert sample["reference"] == example["completion"]

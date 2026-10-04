@@ -93,7 +93,11 @@ def evaluate_tasks(engine, names, smoltalk, limit, max_new_tokens):
                 outputs, _ = engine.generate(
                     inputs.input_ids, inputs.attention_mask, max_new_tokens=max_new_tokens,
                 )
-                samples.append({**example, "generated": outputs[0][0]})
+                samples.append({
+                    "prompt": example["prompt"],
+                    "reference": example["completion"],
+                    "generated": outputs[0][0],
+                })
             results[name] = {"samples": samples}
         else:
             task = EVAL_TASKS[name]()
