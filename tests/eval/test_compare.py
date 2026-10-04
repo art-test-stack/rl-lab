@@ -92,3 +92,99 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
         assert (output / "plots" / f"{name}.pdf").stat().st_size > 0
     with pytest.raises(ValueError, match="Unknown/unscored"):
         compare.select_tasks("smoltalk")
+
+
+@pytest.mark.parametrize("selector", ["all", "Qwen", "None", "none"])
+def test_native_tool_selection_final_scoring_and_saved_history(monkeypatch, tmp_path, selector):
+    pytest.importorskip("matplotlib")
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2]))
+    from scripts.eval import compare
+
+    class Question(Task):
+        eval_type = "generative"
+
+        def num_examples(self):
+            return 1
+
+        def get_example(self, index):
+            return {"messages": [{"role": "user", "content": "Compute 3 + 4."},
+                                 {"role": "assistant", "content": "#### 7"}]}
+
+        def evaluate(self, example, prediction):
+            assert prediction == "#### 7"  # Score the final answer, not tool output.
+            return 1.0
+
+    monkeypatch.setattr(compare, "TASKS", {"gsm8k": Question})
+    native_calls = []
+    plain_calls = []
+
+    @contextmanager
+    def load(path, device):
+        def render(messages, tokenize=False, **kwargs):
+            assert all(message["role"] != "assistant" for message in messages)
+            if tokenize:
+                return [1]
+            return "<|im_start|><tool_call> python" if kwargs.get("tools") else "plain"
+
+        def complete(conversations, tools, response_template, max_new_tokens, max_tool_rounds):
+            native_calls.append(path)
+            assert [tool.__name__ for tool in tools] == ["python"]
+            assert response_template == compare.QWEN_RESPONSE_TEMPLATE
+            assert max_new_tokens == 32 and max_tool_rounds == 2
+            assert conversations[0][0]["role"] == "system"
+            assert compare.TOOL_INSTRUCTION in conversations[0][0]["content"]
+            assert conversations[0][-1] == {"role": "user", "content": "Compute 3 + 4."}
+            return [conversations[0] + [
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"type": "function", "function": {"name": "python", "arguments": {"code": "print(3 + 4)"}}},
+                ]},
+                {"role": "tool", "name": "python", "content": '{"stdout":"7"}'},
+                {"role": "assistant", "content": "#### 7"},
+            ]]
+
+        yield SimpleNamespace(
+            model=SimpleNamespace(config=SimpleNamespace(max_position_embeddings=1024, model_type="qwen2"),
+                                  eval=lambda: None),
+            tokenizer=SimpleNamespace(pad_token_id=0, chat_template="tool-aware", apply_chat_template=render),
+            complete=complete,
+        )
+
+    def plain(task, engine, **kwargs):
+        plain_calls.append(True)
+        kwargs["on_result"](0, task[0], "no tools", 0.0)
+        return EvalResult(num_examples=1, score=0.0)
+
+    monkeypatch.setattr(compare.TransformersEngine, "load", load)
+    monkeypatch.setattr(compare, "evaluate_task", plain)
+    output = tmp_path / "comparison"
+    monkeypatch.setattr(sys, "argv", [
+        "compare", "--model", "Baseline=baseline", "--model", "Qwen=qwen", "--tasks", "gsm8k",
+        "--tools", "python", "--tool-models", selector, "--max-new-tokens", "32",
+        "--max-tool-rounds", "2", "--python-timeout", "1", "--device-type", "cpu",
+        "--output-dir", str(output),
+    ])
+    compare.main()
+    selected = compare.select_tool_models("python", selector, ["Baseline", "Qwen"])
+    results = json.loads((output / "evaluation.json").read_text())
+    assert results["settings"]["tool_models"] == selected
+    assert len(native_calls) == len(selected)
+    assert len(plain_calls) == 2 - len(selected)
+    for index, entry in enumerate(results["models"]):
+        enabled = entry["label"] in selected
+        tools = ["python"] if enabled else []
+        assert entry["tasks"]["gsm8k"]["tools"] == tools
+        assert entry["tasks"]["gsm8k"]["score"] == float(enabled)
+        record = json.loads((output / f"model-{index}-gsm8k.jsonl").read_text())
+        assert record["tools"] == tools
+        if enabled:
+            assert record["prediction"] == "#### 7"
+            assert record["history"][-2]["role"] == "tool"
+            assert record["history"][-3]["tool_calls"][0]["function"]["name"] == "python"
+        else:
+            assert "history" not in record
+    for value in (None, "None", "none", "NONE"):
+        assert compare.select_tool_models(value, "all", ["Qwen"]) == []
+    with pytest.raises(ValueError, match="model labels"):
+        compare.select_tool_models("python", "missing", ["Qwen"])
+    with pytest.raises(ValueError, match="GPT-2 is unsupported"):
+        compare.tool_response_template(SimpleNamespace(tokenizer=SimpleNamespace(chat_template=None)), [])

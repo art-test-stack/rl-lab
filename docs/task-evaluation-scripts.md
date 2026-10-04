@@ -62,6 +62,50 @@ does not merge older runs or assume that equal labels imply comparable
 settings. Model and dataset Hub revisions are not pinned by this first
 implementation; prediction files retain the actual scored examples.
 
+### Native Python tool calling
+
+Add `--tools python --tool-models 'Qwen2.5-1.5B-Instruct'` to grant Python
+access to a particular model label. `--tool-models` accepts comma-separated
+labels or `all` (the default selector). `--tools` defaults to `none`;
+`--tools none` or `--tool-models none` disables access. None values are
+case-insensitive, so `None` and `NONE` work too.
+
+Tool completion reuses `TransformersEngine.complete()`. Models must have a
+chat template that renders tool descriptions and a native response parser.
+The script accepts the tokenizer's `response_template`, or uses the existing
+Qwen2 response schema for Qwen2 tool-aware templates (including Qwen2.5).
+GPT-2's plain role template is unsupported: requesting tools for it fails
+explicitly rather than silently evaluating without tools. For a mixed
+GPT-2/Qwen comparison, select only the Qwen label instead of `all`.
+
+For generative tasks, the model receives the usual task instructions plus
+permission to use Python. It may choose to answer without a tool call.
+The final assistant answer is passed to the unchanged task scorer; GSM8K
+still requires `#### number`. No reference solution enters the tool
+conversation. ARC/MMLU and CORE remain without tools even when the model
+has been selected for tool access elsewhere.
+
+`--max-new-tokens` applies to each assistant turn in tool mode, rather than
+the entire conversation. `--max-tool-rounds` defaults to 4, and
+`--python-timeout` defaults to 5 seconds per execution. Each Python call has a
+fresh namespace: use `print()` to return a result. The executor is not a
+security sandbox, and its memory limit is not enforced on macOS. See
+[tool completion documentation](engines/transformers-tools.md) for details.
+
+Initial context checks include tool descriptions. Subsequent turns are
+handled by the native engine; model context errors, truncated turns, malformed
+calls and exhausted round budgets stop the comparison.
+Execution errors and timeouts appear as tool responses, letting the model
+attempt recovery. No failed examples are silently excluded from the score.
+
+Each task result and prediction record includes `tools`, the names of tools
+available during that evaluation. Tool-enabled prediction records also have
+`history`, retaining the full prompt, assistant requests, tool outputs and
+final answer. Run settings retain selectors, instructions, limits and timeout;
+model metadata retains the response schema. Plot labels distinguish
+`[tools: python]` from `[tools: none]`. These scores describe different
+evaluation conditions and should be reported with their tool settings.
+
 ## Individual task scripts
 
 Run each script from the repository root. The default model is

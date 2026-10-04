@@ -193,5 +193,19 @@ per-model/task JSONL files with examples, references and predictions, and
 results only and gets a plot for each constituent task. The script reuses the
 suite's generation, categorical and CORE scoring protocols.
 
+Native tool calling is optional. To allow Python for the Qwen model in the
+example, add:
+
+```bash
+--tools python --tool-models 'Qwen2.5-1.5B-Instruct'
+```
+
+`--tool-models all` grants access to every named model. `--tools none` (the
+default), or `--tool-models none`, disables it; `None`/`NONE` are also accepted.
+Selected models need a tool-aware chat template and response parser; GPT-2's
+plain role template is unsupported. Tools apply to generative tasks only;
+categorical and CORE evaluation retain their existing protocols. Reports save
+full tool conversations, and plot labels show whether Python was available.
+
 See [evaluation documentation](docs/task-evaluation-scripts.md) for supported
 tasks, prompting conventions and evaluation limits.
