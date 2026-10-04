@@ -4,10 +4,11 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
+import warnings
 
 from datasets import Dataset
 import torch
-from transformers import AutoTokenizer, HfArgumentParser, set_seed
+from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, set_seed
 from trl import SFTConfig, SFTTrainer
 
 from rl_lab.engines.transformers import TransformersEngine
@@ -42,26 +43,42 @@ class RecipeArguments:
     max_new_tokens: int = 128
 
 
-def export_dataset(task, tokenizer, limit, max_length):
-    """Keep complete user/assistant pairs that fit; never split or truncate turns."""
+def export_dataset(task, tokenizer, limit, max_length, *, split_turns=False, max_new_tokens=0):
+    """Expand training pairs; keep validation conversations whole, with their final reply as target."""
     examples = []
+    discarded = 0
     for row in task.ds:
-        messages = row["messages"]
-        if row["source"] != SOURCE or [m["role"] for m in messages] != ["user", "assistant"]:
+        if row["source"] != SOURCE:
             continue
-        if any(not isinstance(m["content"], str) or not m["content"].strip() for m in messages):
-            continue
-        prompt = tokenizer.apply_chat_template(
-            task.build_eval_input(row).messages, tokenize=False, add_generation_prompt=True,
+        conversation = row["messages"]
+        exchanges = (
+            [conversation[index:index + 2] for index in range(0, len(conversation), 2)]
+            if split_turns else [conversation]
         )
-        completion = " " + messages[-1]["content"] + tokenizer.eos_token
-        if len(tokenizer.encode(prompt + completion)) > max_length:
-            continue
-        examples.append({"prompt": prompt, "completion": completion})
+        for messages in exchanges:
+            if split_turns and [m["role"] for m in messages] != ["user", "assistant"]:
+                continue
+            if any(not isinstance(m["content"], str) or not m["content"].strip() for m in messages):
+                continue
+            prompt = tokenizer.apply_chat_template(
+                task.build_eval_input({"messages": messages}).messages,
+                tokenize=False, add_generation_prompt=True,
+            )
+            completion = " " + messages[-1]["content"] + tokenizer.eos_token
+            if (len(tokenizer.encode(prompt + completion)) > max_length
+                    or len(tokenizer.encode(prompt)) + max_new_tokens > max_length):
+                discarded += 1
+                continue
+            examples.append({"prompt": prompt, "completion": completion})
+            if len(examples) == limit:
+                break
         if len(examples) == limit:
             break
     if not examples:
-        raise ValueError(f"No {SOURCE} one-turn examples fit max_length={max_length}")
+        raise ValueError(f"No {SOURCE} examples fit max_length={max_length}")
+    if not split_turns:
+        print(f"Validation: kept {len(examples)} whole conversations; skipped {discarded} "
+              "oversized conversations while selecting this subset.", flush=True)
     return Dataset.from_list(examples)
 
 
@@ -120,22 +137,41 @@ def main():
         parser.error("Choose an empty --output-dir to preserve existing runs")
 
     set_seed(config.seed)
+    context_length = AutoConfig.from_pretrained(recipe.model_name_or_path).max_position_embeddings
+    train_max_length = config.max_length
+    if train_max_length > context_length:
+        parser.error("--max-length exceeds the model context window")
+    if recipe.max_new_tokens >= context_length:
+        parser.error("--max-new-tokens must leave room for a prompt in the model context window")
+    # ponytail: validation excludes oversized conversations; windowed evaluation can cover them later.
+    warnings.warn(
+        f"Validation keeps only whole conversations that fit the model's {context_length}-token "
+        "context and generation budget; oversized conversations will be discarded. "
+        "Metrics describe this filtered subset, not the full test split.",
+        stacklevel=1,
+    )
     tokenizer = AutoTokenizer.from_pretrained(recipe.model_name_or_path)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.chat_template = CHAT_TEMPLATE
-    train = export_dataset(SmolTalk("train"), tokenizer, recipe.train_limit, config.max_length)
-    held_out = export_dataset(SmolTalk("test"), tokenizer, recipe.eval_limit, config.max_length)
+    train = export_dataset(
+        SmolTalk("train"), tokenizer, recipe.train_limit, train_max_length, split_turns=True,
+    )
+    held_out = export_dataset(
+        SmolTalk("test"), tokenizer, recipe.eval_limit, context_length,
+        max_new_tokens=recipe.max_new_tokens if "smoltalk" in names else 0,
+    )
+    # Training is already length-bounded; preserve the longer, whole validation inputs.
+    config.max_length = None
     trainer = SFTTrainer(
         model=recipe.model_name_or_path, args=config, processing_class=tokenizer,
         train_dataset=train, eval_dataset=held_out,
     )
-    if config.max_length + recipe.max_new_tokens > trainer.model.config.max_position_embeddings:
-        parser.error("--max-length plus --max-new-tokens exceeds the model context window")
     output.mkdir(parents=True, exist_ok=True)
     train.to_json(output / "train.jsonl")
     held_out.to_json(output / "smoltalk-test.jsonl")
     (output / "recipe.json").write_text(json.dumps({
         **asdict(recipe), "source": SOURCE, "training": config.to_dict(),
+        "training_max_length": train_max_length, "validation_context_length": context_length,
         "train_examples": len(train), "eval_examples": len(held_out),
         "train_fingerprint": train._fingerprint, "eval_fingerprint": held_out._fingerprint,
     }, indent=2), encoding="utf-8")

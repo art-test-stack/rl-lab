@@ -11,10 +11,23 @@ uv run --locked --group train python scripts/train/sft.py \
 
 The default model is `openai-community/gpt2`. The recipe uses the existing
 `SmolTalk` adapter and its deterministic dataset order, selecting source
-`smol-magpie-ultra-short` independently from the train and test splits. Only
-exactly one user message followed by one assistant message is accepted.
-System-prefixed, multi-turn, empty, and oversized examples are excluded.
-Limits apply after filtering. No turn splitting or task classification is done.
+`smol-magpie-ultra-short` independently from the train and test splits.
+Every training conversation is expanded into independent user/assistant exchanges:
+a three-exchange conversation supplies three training examples. Earlier exchanges
+are not included as context, so follow-up questions may lose useful information.
+Empty and oversized training exchanges are excluded. `--train-limit` counts
+accepted exchanges after expansion and length filtering. No task classification
+is done.
+
+Validation conversations remain whole: all earlier messages form the prompt,
+and the final assistant reply is the answer-only loss target. The script warns
+at startup that only complete conversations fitting the selected model's context
+are evaluated. When sample generation is requested, its prompt plus the generation
+budget must also fit. Oversized conversations are skipped, and the script reports
+how many it skipped while selecting the requested subset. `--eval-limit` counts
+accepted whole conversations. The underlying test split is not modified; metrics
+describe the selected subset rather than the full split. Windowed evaluation of
+longer conversations is deferred.
 
 The tokenizer receives a plain-text chat template:
 
@@ -31,9 +44,12 @@ full-model training, standard next-token loss, and single-process execution.
 The script accepts native `SFTConfig` arguments, including `--learning-rate`,
 `--num-train-epochs`, `--max-steps`, `--gradient-accumulation-steps`, and `--seed`.
 Defaults are one epoch, batch size 2, maximum sequence length 512, and float32
-training without gradient checkpointing. Use `--use-cpu` for a CPU run. GPU
+training without gradient checkpointing. `--max-length` limits training exchanges;
+validation uses the chosen model's context window, not the training limit. TRL
+truncation is disabled because exports are already bounded and validation must
+retain its complete context. Use `--use-cpu` for a CPU run. GPU
 training can enable `--bf16 true` where supported. Generation defaults to 128
-new tokens. The selected length and generation budget must fit the model context.
+new tokens. Training lengths and validation/generation inputs must fit the model context.
 Use a new, empty output directory for each run.
 
 ## Evaluation and artifacts
@@ -64,6 +80,8 @@ The output directory contains:
 The lockfile fixes software versions, the seed fixes training randomness, and
 the exports preserve the selected examples. Dataset/model Hub revisions are not
 pinned by this first recipe; hardware differences can also change results.
+The manifest records the training length limit and model-dependent validation
+context limit separately.
 
 ## Offline compatibility check
 
@@ -74,5 +92,7 @@ uv run --locked --group train pytest tests/train/test_sft.py -q
 
 This runs actual TRL optimization on the existing tiny local GPT-2 fixture. Only
 Hub dataset loading is replaced with local rows. It checks filtering, native
-prompt/padding masks, supervised EOS, a weight update, checkpoint reload, and
-both SmolTalk samples and an existing task scorer.
+prompt/padding masks, supervised EOS, expansion of all three training exchanges,
+whole validation inputs longer than the training limit, exclusion of oversized
+validation conversations, a weight update, checkpoint reload, and both SmolTalk
+samples and an existing task scorer.

@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 from datasets import Dataset
 import pytest
@@ -34,6 +35,18 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
 
     multiple_turns = row("hello", "answer")
     multiple_turns["messages"] += row("world", "answer")["messages"]
+    multiple_turns["messages"] += row("hello world", "answer world")["messages"]
+    tokenizer.chat_template = recipe.CHAT_TEMPLATE
+    from rl_lab.tasks._base import Task
+    expanded = recipe.export_dataset(
+        SimpleNamespace(ds=Dataset.from_list([multiple_turns]), build_eval_input=Task().build_eval_input),
+        tokenizer, limit=3, max_length=20, split_turns=True,
+    )
+    assert list(expanded) == [
+        {"prompt": "User: hello\nAssistant:", "completion": " answer<eos>"},
+        {"prompt": "User: world\nAssistant:", "completion": " answer<eos>"},
+        {"prompt": "User: hello world\nAssistant:", "completion": " answer world<eos>"},
+    ]
     with_system = row("hello", "answer")
     with_system["messages"].insert(0, {"role": "system", "content": "world"})
     train_rows = Dataset.from_list([
@@ -42,7 +55,8 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
         row("hello", "answer"), row("hello world", "answer world"),
         row("world", "answer"),  # Beyond the requested training limit.
     ])
-    test_rows = Dataset.from_list([row("world", "answer"), row("world", "answer world")])
+    oversized_validation = row("hello " * 40, "answer")
+    test_rows = Dataset.from_list([multiple_turns, row("world", "answer world"), oversized_validation])
     monkeypatch.setattr("rl_lab.tasks.smoltalk.load_dataset", lambda name, split: (
         train_rows if split == "train" else test_rows
     ))
@@ -69,6 +83,13 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
                 assert (batch["labels"][index, length:] == -100).all()
                 assert (batch["attention_mask"][index, length:] == 0).all()
             assert (batch["attention_mask"] == 0).any()  # Exercise actual padding.
+            full_validation = next(
+                example for example in kwargs["eval_dataset"] if example["prompt"].count("User:") == 3
+            )
+            ids = tokenizer.encode(full_validation["prompt"] + full_validation["completion"])
+            assert len(ids) > 20  # Preserve validation beyond the training length limit.
+            assert any(example["input_ids"] == ids for example in self.eval_dataset)
+            assert self.args.max_length is None
 
     monkeypatch.setattr(recipe, "SFTTrainer", CheckedTrainer)
     output = tmp_path / "run"
@@ -79,7 +100,8 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
         "--train-limit", "2", "--eval-limit", "2", "--eval-tasks", "gsm8k,smoltalk",
         "--disable-tqdm", "true", "--dataloader-pin-memory", "false",
     ])
-    recipe.main()
+    with pytest.warns(UserWarning, match="oversized conversations will be discarded"):
+        recipe.main()
 
     exported = [json.loads(line) for line in (output / "train.jsonl").read_text().splitlines()]
     valid_examples = [
@@ -93,6 +115,12 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
     assert settings["source"] == recipe.SOURCE
     assert settings["train_examples"] == settings["eval_examples"] == 2
     assert settings["training"]["completion_only_loss"] is True
+    assert settings["training_max_length"] == 20
+    assert settings["validation_context_length"] == model.config.max_position_embeddings
+    validation = [json.loads(line) for line in (output / "smoltalk-test.jsonl").read_text().splitlines()]
+    assert len(validation) == 2
+    assert sum(example["prompt"].count("User:") == 3 for example in validation) == 1
+    assert sum(example["prompt"].count("User:") == 1 for example in validation) == 1
     assert json.loads((output / "trainer_state.json").read_text())["global_step"] == 1
     reloaded = AutoModelForCausalLM.from_pretrained(output)
     assert any(not torch.equal(initial_weights[name], weight)
