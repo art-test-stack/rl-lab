@@ -1,7 +1,6 @@
 """SFT on short, one-turn SmolTalk exchanges; evaluate with rl_lab tasks."""
 
 from dataclasses import asdict, dataclass
-import json
 from pathlib import Path
 import re
 import warnings
@@ -14,12 +13,13 @@ from trl import SFTConfig, SFTTrainer
 from rl_lab.distributed import cleanup_dist_groups, init_distributed
 from rl_lab.engines.transformers import TransformersEngine
 from rl_lab.eval import evaluate_task
-from rl_lab.optim import load_optimizer_config, setup_optimizer
+from rl_lab.optim import load_optimizer_config, setup_optimizer, trainer_model_for_generation
 from rl_lab.tasks.gpqa import GPQA
 from rl_lab.tasks.gsm8k import GSM8K
 from rl_lab.tasks.smoltalk import SmolTalk
 from rl_lab.tasks.spellingbee import SimpleSpelling, SpellingBee
 from rl_lab.utils.default import MODELS_FOLDER
+from rl_lab.utils.report import get_report
 
 
 SOURCE = "smol-magpie-ultra-short"
@@ -144,8 +144,10 @@ def main():
         parser.error("Sample limits and --max-new-tokens must be positive")
     if config.max_length is None or config.max_length < 2:
         parser.error("--max-length must be at least 2")
-    if config.fsdp or config.deepspeed:
-        parser.error("This recipe supports single-device execution and ordinary DDP, without FSDP or DeepSpeed")
+    if config.deepspeed:
+        parser.error("This recipe uses native PyTorch DDP/FSDP2, without DeepSpeed")
+    if config.fsdp and config.fsdp_config.get("state_dict_type", "FULL_STATE_DICT") != "FULL_STATE_DICT":
+        parser.error("This recipe requires FSDP FULL_STATE_DICT for checkpoint reload and task evaluation")
     if config.packing or config.padding_free or not config.completion_only_loss:
         parser.error("This recipe requires answer-only loss with packing and padding-free disabled")
     output = Path(config.output_dir)
@@ -162,7 +164,7 @@ def main():
         parser.error("--max-length exceeds the model context window")
     if recipe.max_new_tokens >= context_length:
         parser.error("--max-new-tokens must leave room for a prompt in the model context window")
-    # ponytail: validation excludes oversized conversations; windowed evaluation can cover them later.
+    # validation excludes oversized conversations; windowed evaluation can cover them later.
     warnings.warn(
         f"Validation keeps only whole conversations that fit the model's {context_length}-token "
         "context and generation budget; oversized conversations will be discarded. "
@@ -189,29 +191,23 @@ def main():
         optimizer_groups = setup_optimizer(trainer, optimizer_recipe)
     except ValueError as error:
         parser.error(str(error))
-    if dist_ctx.is_distributed:
-        # Prepare for training before evaluation registers an unwrapped model.
-        trainer.create_optimizer()
-        trainer.model_wrapped, trainer.optimizer = trainer.accelerator.prepare(
-            trainer.model, trainer.optimizer,
-        )
     trainer.accelerator.wait_for_everyone()
+    report = get_report(output)
     if dist_ctx.rank == 0:
-        output.mkdir(parents=True, exist_ok=True)
         train.to_json(output / "train.jsonl")
         held_out.to_json(output / "smoltalk-test.jsonl")
-        (output / "recipe.json").write_text(json.dumps({
-            **asdict(recipe), "source": SOURCE, "training": config.to_dict(),
-            "world_size": dist_ctx.world_size,
-            "training_max_length": train_max_length, "validation_context_length": context_length,
-            "train_examples": len(train), "eval_examples": len(held_out),
-            "train_fingerprint": train._fingerprint, "eval_fingerprint": held_out._fingerprint,
-            "optimizer_recipe": optimizer_recipe, "optimizer_groups": optimizer_groups,
-        }, indent=2), encoding="utf-8")
+    report.write_json("recipe.json", {
+        **asdict(recipe), "source": SOURCE, "training": config.to_dict(),
+        "world_size": dist_ctx.world_size,
+        "training_max_length": train_max_length, "validation_context_length": context_length,
+        "train_examples": len(train), "eval_examples": len(held_out),
+        "train_fingerprint": train._fingerprint, "eval_fingerprint": held_out._fingerprint,
+        "optimizer_recipe": optimizer_recipe, "optimizer_groups": optimizer_groups,
+    })
 
     before = {"smoltalk_loss": trainer.evaluate()["eval_loss"]}
-    if dist_ctx.rank == 0:
-        with TransformersEngine(trainer.accelerator.unwrap_model(trainer.model), tokenizer) as engine:
+    if dist_ctx.rank == 0 or trainer.is_fsdp_enabled:
+        with trainer_model_for_generation(trainer) as model, TransformersEngine(model, tokenizer) as engine:
             before["tasks"] = evaluate_tasks(
                 engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
             )
@@ -228,9 +224,7 @@ def main():
             after["tasks"] = evaluate_tasks(
                 engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
             )
-        results = {"before": before, "after": after}
-        (output / "evaluation.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
-        print(json.dumps(results, indent=2))
+    report.write_json("evaluation.json", {"before": before, "after": after}, echo=True)
 
 
 if __name__ == "__main__":
