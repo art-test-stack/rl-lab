@@ -10,25 +10,10 @@ import torch
 
 from rl_lab.engines.transformers import TransformersEngine
 from rl_lab.tools.exec import make_python_tool
+from rl_lab.tokenizer import QWEN_RESPONSE_TEMPLATE as RESPONSE_TEMPLATE
 
 
 MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
-
-# Qwen2.5's tokenizer lacks a response template for native response parsing.
-RESPONSE_TEMPLATE = {
-    "start_anchor": "<|im_start|>assistant\n",
-    "defaults": {"role": "assistant", "content": ""},
-    "fields": {
-        "content": {"close": "<|im_end|>", "repeats": True, "join": ""},
-        "tool_calls": {
-            "open": "<tool_call>",
-            "close": "</tool_call>",
-            "content": "json",
-            "repeats": True,
-            "transform": {"type": "function", "function": "{content}"},
-        },
-    },
-}
 
 
 def main():

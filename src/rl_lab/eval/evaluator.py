@@ -151,3 +151,33 @@ def evaluate_task(
             if on_result is not None:
                 on_result(start + offset, example, completion, score)
     return EvalResult(num_examples=count, score=total / count)
+
+
+def evaluate_categorical(task, model, tokenizer, max_per_task=-1, on_result=None):
+    """Choose the highest next-token logit among the task's single-token labels."""
+    count = len(task) if max_per_task == -1 else min(len(task), max_per_task)
+    if count == 0:
+        raise ValueError("Cannot evaluate an empty task")
+    model.eval()
+    correct = 0
+    with torch.inference_mode():
+        for index in range(count):
+            example = task[index]
+            labels = task.evaluation_candidates(example)
+            label_ids = [tokenizer.encode(label, add_special_tokens=False) for label in labels]
+            if any(len(ids) != 1 for ids in label_ids):
+                raise ValueError("Each answer label must encode to exactly one token")
+            prompt = task.build_eval_input(example)
+            inputs = tokenizer.apply_chat_template(
+                list(prompt.messages), tokenize=True, add_generation_prompt=True,
+                return_tensors="pt", return_dict=True,
+            ).to(next(model.parameters()).device)
+            logits = model(**inputs, use_cache=False).logits[0, -1]
+            prediction = labels[logits[[ids[0] for ids in label_ids]].argmax().item()]
+            score = int(task.evaluate(example, prediction))
+            correct += score
+            if on_result is not None:
+                on_result(index, example, prediction, score)
+            print(f"\r{correct}/{index + 1} correct", end="", flush=True)
+    print()
+    return EvalResult(num_examples=count, score=correct / count)
