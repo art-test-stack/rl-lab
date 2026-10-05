@@ -2,6 +2,7 @@
 
 import argparse
 from dataclasses import asdict
+from datetime import datetime, timezone
 import gc
 import json
 import math
@@ -25,6 +26,7 @@ from rl_lab.tasks.mmlu import MMLU
 from rl_lab.tasks.spellingbee import SimpleSpelling, SpellingBee
 from rl_lab.tools.exec import make_python_tool
 from rl_lab.utils.common import detect_device_type
+from rl_lab.utils.default import REPORTS_FOLDER
 from scripts.eval.mmlu import evaluate as evaluate_categorical
 from scripts.agent_python import RESPONSE_TEMPLATE as QWEN_RESPONSE_TEMPLATE
 
@@ -217,7 +219,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", action="append", required=True, metavar="LABEL=PATH")
     parser.add_argument("--tasks", default=None, help="Comma-separated tasks; omitted, None or all runs all scored tasks")
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path,
+                        help="Output directory; default: CACHE_DIR/reports/compare-<UTC timestamp>")
     parser.add_argument("--device-type", choices=["cpu", "mps", "cuda"], default=None)
     parser.add_argument("--max-per-task", type=int, default=-1)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -254,7 +257,8 @@ def main():
         parser.error("--batch-size and --max-new-tokens must be positive")
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         parser.error("This script supports single-process evaluation")
-    output = args.output_dir
+    output = args.output_dir or REPORTS_FOLDER / f"compare-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}"
+    print(f"Evaluation output: {output}", flush=True)
     if output.exists() and any(output.iterdir()):
         parser.error("Choose an empty --output-dir to preserve previous results")
     # Fail before expensive evaluation if the optional plotting dependency is absent.

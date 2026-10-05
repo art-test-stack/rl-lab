@@ -6,17 +6,19 @@ The independent comparison script works with checkpoints from any training
 method. Labels are supplied explicitly; no before-training model is required:
 
 ```bash
+cache_dir="${RLLAB_CACHE_DIR:-$HOME/.cache/rl_lab}"
 uv run --locked --with matplotlib python -m scripts.eval.compare \
   --model 'GPT-2 (before SFT)=openai-community/gpt2' \
-  --model 'GPT-2 (after SFT)=report/sft-gpt2-m2' \
+  --model "GPT-2 (after SFT)=$cache_dir/models/openai-community--gpt2/sft" \
   --tasks gsm8k,mmlu \
-  --max-per-task 16 --max-new-tokens 64 --device-type mps \
-  --output-dir report/gpt2-sft-comparison
+  --max-per-task 16 --max-new-tokens 64 --device-type mps
 ```
 
 Add another `--model 'Baseline=MODEL_OR_CHECKPOINT'` to compare a baseline.
 Omit the before model to evaluate only the trained checkpoint and/or baselines.
-Use a new, empty output directory for each comparison.
+By default each comparison writes to `CACHE_DIR/reports/compare-<UTC timestamp>`.
+`CACHE_DIR` uses `RLLAB_CACHE_DIR`, or `~/.cache/rl_lab` when unset.
+An explicit `--output-dir` must be a new, empty directory.
 
 Omitting `--tasks`, or passing `--tasks None` or `--tasks all`, evaluates all
 implemented scored benchmarks: `gsm8k`, `mmlu`, `arc_easy`, `arc_challenge`,
@@ -44,6 +46,13 @@ match the standalone scripts. ARC/MMLU reuse next-token answer-label scoring
 and require labels to be single tokens. Oversized chat prompts fail instead
 of being dropped or truncated. CORE retains its separate continuation-scoring
 and context-cropping protocol.
+
+CORE processes the full retained context but computes losses and predictions
+only for the suffix containing the answers. Models supporting Hugging Face's
+`logits_to_keep` also project only that suffix to the vocabulary; other models
+project the full sequence before slicing. This preserves answer scoring and
+does not change the few-shot examples or context limit. `--max-new-tokens`
+does not limit CORE's continuation scoring.
 
 Outputs:
 
@@ -132,7 +141,7 @@ and number of examples. Models, datasets, and the spelling word list may need
 downloads on the first run.
 
 Each completed benchmark run also writes a timestamped Markdown file under
-`report/` and prints its path. ARC writes one report for each evaluated subset.
+`CACHE_DIR/reports/` and prints its path. ARC writes one report for each evaluated subset.
 Reports include the model, run settings, accuracy, and every scored example,
 with **wrong answers first**. Each example shows its question/conversation
 (including choices), expected answer, model answer, and score. Example numbers

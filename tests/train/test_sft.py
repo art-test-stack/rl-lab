@@ -92,10 +92,11 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
             assert self.args.max_length is None
 
     monkeypatch.setattr(recipe, "SFTTrainer", CheckedTrainer)
-    output = tmp_path / "run"
+    monkeypatch.setattr(recipe, "MODELS_FOLDER", tmp_path / "models")
+    output = tmp_path / "models" / "model" / "sft"
     monkeypatch.setattr(sys, "argv", [
         str(path), "--model-name-or-path", str(local_model),
-        "--output-dir", str(output), "--use-cpu", "--max-steps", "1",
+        "--use-cpu", "--max-steps", "1",
         "--max-length", "20", "--max-new-tokens", "4",
         "--train-limit", "2", "--eval-limit", "2", "--eval-tasks", "gsm8k,smoltalk",
         "--disable-tqdm", "true", "--dataloader-pin-memory", "false",

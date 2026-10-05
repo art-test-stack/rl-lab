@@ -48,11 +48,14 @@ def test_categorical_script_selects_only_available_labels(script, model, tokeniz
 
     monkeypatch.setattr(model, "forward", forward)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("rl_lab.eval.report.REPORTS_FOLDER", tmp_path / "reports")
     report = EvaluationReport(script, "local-model", {"evaluation": "answer-label logits"})
     result = module.evaluate(Questions(), model, tokenizer, max_per_task=1, on_result=report.record)
     assert result.num_examples == 1
     assert result.score == 1.0
-    text = report.write(result).read_text(encoding="utf-8")
+    report_path = report.write(result)
+    assert report_path.parent == tmp_path / "reports"
+    text = report_path.read_text(encoding="utf-8")
     assert "## Wrong answers (0)" in text
     assert "## Correct answers (1)" in text
     assert "**Expected answer**\n\n```text\nB\n```" in text
@@ -87,6 +90,7 @@ def test_script_main_saves_report(script, extra_args, expected_reports, monkeypa
         return EvalResult(1, 0.0)
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("rl_lab.eval.report.REPORTS_FOLDER", tmp_path / "reports")
     monkeypatch.setattr(sys, "argv", [script, "--max-per-task", "1", *extra_args])
     monkeypatch.setattr(module, "init_distributed", lambda *a: SimpleNamespace(device="cpu"))
     monkeypatch.setattr(module, "load_hf_model", lambda *a: (object(), object()))
@@ -96,7 +100,7 @@ def test_script_main_saves_report(script, extra_args, expected_reports, monkeypa
             monkeypatch.setattr(module, name, FakeTask)
     monkeypatch.setattr(module, "evaluate" if script in {"arc", "mmlu"} else "evaluate_task", evaluate)
     module.main()
-    reports = list(Path("report").glob("*.md"))
+    reports = list((tmp_path / "reports").glob("*.md"))
     assert len(reports) == expected_reports
     output = capsys.readouterr().out
     for report in reports:

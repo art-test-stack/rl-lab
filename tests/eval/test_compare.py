@@ -67,11 +67,12 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
             "local": {"accuracy": 0.5, "num_examples": 11, "centered_result": 0.25},
         },
     })
-    output = tmp_path / "comparison"
+    monkeypatch.setattr(compare, "REPORTS_FOLDER", tmp_path / "reports")
     monkeypatch.setattr(sys, "argv", ["compare", "--model", "After SFT=checkpoint",
                                        "--model", "Baseline=baseline", "--max-per-task", "11",
-                                       "--device-type", "cpu", "--output-dir", str(output)])
+                                       "--device-type", "cpu"])
     compare.main()
+    output, = (tmp_path / "reports").glob("compare-*")
     results = json.loads((output / "evaluation.json").read_text())
     assert loads == ["checkpoint", "baseline"]  # No before checkpoint is required.
     assert results["settings"]["tasks"] == compare.select_tasks(None)
