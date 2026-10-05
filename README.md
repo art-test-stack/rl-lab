@@ -167,10 +167,9 @@ Use [scripts/eval/compare.py](scripts/eval/compare.py) to evaluate models before
 and after post-training, or compare any named models on the same task examples:
 
 ```bash
-cache_dir="${RLLAB_CACHE_DIR:-$HOME/.cache/rl_lab}"
 uv run --locked --with matplotlib python -m scripts.eval.compare \
   --model 'GPT-2 (before SFT)=openai-community/gpt2' \
-  --model "GPT-2 (after SFT)=$cache_dir/models/openai-community--gpt2/sft" \
+  --model 'GPT-2 (after SFT)=openai-community/gpt2:sft' \
   --model 'Qwen2.5-1.5B-Instruct=Qwen/Qwen2.5-1.5B-Instruct' \
   --tasks gsm8k,mmlu \
   --max-per-task 16 --max-new-tokens 512 \
@@ -179,12 +178,15 @@ uv run --locked --with matplotlib python -m scripts.eval.compare \
 
 Each `--model` is `LABEL=MODEL_OR_CHECKPOINT`; labels are arbitrary. Omit the
 before-training model if it is not needed, and add more models as baselines.
+Cached checkpoints use `HF_ID:METHOD[:RUN]`, for example
+`openai-community/gpt2:sft:run-2`. An omitted run selects `default`.
 Models load sequentially. Use `cpu` or `cuda` instead of `mps` as appropriate,
 and optionally set `--output-dir` to a new, empty directory.
 
 `CACHE_DIR` is resolved from `RLLAB_CACHE_DIR` by `rl_lab.utils.default`,
 defaulting to `~/.cache/rl_lab`. SFT defaults to
-`CACHE_DIR/models/openai-community--gpt2/sft`; comparisons create a timestamped
+`CACHE_DIR/models/openai-community--gpt2/sft/default`; `--run-name run-2`
+selects the `sft/run-2` directory. Comparisons create a timestamped
 directory under `CACHE_DIR/reports`. Checkpoints and comparison reports are
 stored separately.
 
