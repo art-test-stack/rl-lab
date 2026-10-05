@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
+import re
 import warnings
 
 from datasets import Dataset
@@ -126,9 +127,12 @@ def main():
         prediction_loss_only=True, report_to="none",
     )
     arguments, _ = parser.parse_known_args()
+    run_name = arguments.run_name or "default"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", run_name):
+        parser.error("--run-name must start with a letter or digit and contain only letters, digits, '.', '_' or '-'")
     model_path = Path(arguments.model_name_or_path)
     model_name = model_path.name if model_path.is_dir() else arguments.model_name_or_path.replace("/", "--")
-    parser.set_defaults(output_dir=str(MODELS_FOLDER / model_name / "sft"))
+    parser.set_defaults(output_dir=str(MODELS_FOLDER / model_name / "sft" / run_name), run_name=run_name)
     recipe, config = parser.parse_args_into_dataclasses()
     names = [name.strip() for name in recipe.eval_tasks.split(",")]
     if any(name not in {"smoltalk", *EVAL_TASKS} for name in names):
