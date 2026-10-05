@@ -1274,6 +1274,7 @@ source = { editable = "." }
 dependencies = [
     { name = "datasets" },
     { name = "psutil" },
+    { name = "pyyaml" },
     { name = "tokenizers" },
     { name = "torch" },
     { name = "transformers" },
@@ -1291,6 +1292,7 @@ train = [
 requires-dist = [
     { name = "datasets", specifier = ">=5.0.1" },
     { name = "psutil", specifier = ">=7.2.2" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "tokenizers", specifier = ">=0.23.2" },
     { name = "torch", specifier = ">=2.14.0" },
     { name = "transformers", specifier = ">=5.17.0" },

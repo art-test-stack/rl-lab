@@ -12,8 +12,10 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from rl_lab.optim import GroupedOptimizer, load_optimizer_config
 
-@pytest.mark.parametrize("run_name", [None, "cpu-smoke"])
+
+@pytest.mark.parametrize("run_name", [None, "cpu-smoke", "muon-smoke"])
 def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, monkeypatch, tmp_path, run_name):
     pytest.importorskip("trl")
     path = Path(__file__).resolve().parents[2] / "scripts" / "train" / "sft.py"
@@ -27,6 +29,11 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
     tokenizer.save_pretrained(local_model)
     model.save_pretrained(local_model)
     initial_weights = {name: value.clone() for name, value in model.state_dict().items()}
+    muon = run_name == "muon-smoke"
+    optimizer_path = (Path(__file__).resolve().parents[2] / "configs" / "optim"
+                      / ("gpt2-muon.yaml" if muon else "gpt2-adamw.yaml"))
+    grouped = run_name is not None
+    expected_lrs = [1e-4, 0.02, 2e-5] if muon else [1e-4, 2e-5, 2e-5]
 
     def row(question, answer, source=recipe.SOURCE):
         return {"source": source, "messages": [
@@ -92,12 +99,44 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
             assert any(example["input_ids"] == ids for example in self.eval_dataset)
             assert self.args.max_length is None
 
+        def train(self, *args, **kwargs):
+            if grouped:
+                assert isinstance(self.optimizer, GroupedOptimizer if muon else torch.optim.AdamW)
+                groups = self.optimizer.param_groups
+                assert [group["name"] for group in groups] == ([
+                    "embeddings", "matrices", "biases_and_norms",
+                ] if muon else [
+                    "embeddings", "position_embeddings", "transformer",
+                ])
+                assert [group["lr"] for group in groups] == expected_lrs
+                assert [group["weight_decay"] for group in groups] == ([0.0, 0.0, 0.0] if muon else [0.0, 0.0, 0.01])
+                assert tuple(groups[0]["betas"]) == (0.8, 0.995)
+                assert tuple(groups[2 if muon else 1]["betas"]) == (0.9, 0.98)
+                if muon:
+                    assert groups[1]["momentum"] == 0.95
+                    assert groups[1]["beta"] == 0.9
+                    assert all(parameter.ndim == 2 for parameter in groups[1]["params"])
+                assert sum(len(group["params"]) for group in groups) == len(list(self.model.parameters()))
+            result = super().train(*args, **kwargs)
+            if grouped:
+                assert self.optimizer.state
+                for group in self.optimizer.param_groups:
+                    for parameter in group["params"]:
+                        state = self.optimizer.state[parameter]
+                        if group["optimizer"] == "muon":
+                            assert set(state) == {"momentum_buffer", "second_momentum_buffer"}
+                            assert state["momentum_buffer"].shape == parameter.shape
+                        else:
+                            assert state["step"] == 1
+            return result
+
     monkeypatch.setattr(recipe, "SFTTrainer", CheckedTrainer)
     monkeypatch.setattr(recipe, "MODELS_FOLDER", tmp_path / "models")
     output = tmp_path / "models" / "model" / "sft" / (run_name or "default")
     monkeypatch.setattr(sys, "argv", [
         str(path), "--model-name-or-path", str(local_model),
         *(["--run-name", run_name] if run_name else []),
+        *(["--optimizer-config", str(optimizer_path), "--adam-beta2", "0.98"] if grouped else []),
         "--use-cpu", "--max-steps", "1",
         "--max-length", "20", "--max-new-tokens", "4",
         "--train-limit", "2", "--eval-limit", "2", "--eval-tasks", "gsm8k,smoltalk",
@@ -121,6 +160,19 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
     assert settings["training"]["run_name"] == (run_name or "default")
     assert settings["training_max_length"] == 20
     assert settings["validation_context_length"] == model.config.max_position_embeddings
+    if grouped:
+        assert settings["optimizer_config"] == str(optimizer_path)
+        assert settings["optimizer_recipe"] == load_optimizer_config(optimizer_path)
+        assert [group["lr"] for group in settings["optimizer_groups"]] == expected_lrs
+        assert settings["optimizer_groups"][0]["param_names"] == (
+            ["transformer.wte.weight", "transformer.wpe.weight"] if muon else ["transformer.wte.weight"]
+        )
+        checkpoint = next(output.glob("checkpoint-*/optimizer.pt"))
+        saved_groups = torch.load(checkpoint, weights_only=True)["param_groups"]
+        assert [group["initial_lr"] for group in saved_groups] == expected_lrs
+    else:
+        assert settings["optimizer_recipe"] is None
+        assert settings["optimizer_groups"] is None
     validation = [json.loads(line) for line in (output / "smoltalk-test.jsonl").read_text().splitlines()]
     assert len(validation) == 2
     assert sum(example["prompt"].count("User:") == 3 for example in validation) == 1
@@ -129,6 +181,9 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
     reloaded = AutoModelForCausalLM.from_pretrained(output)
     assert any(not torch.equal(initial_weights[name], weight)
                for name, weight in reloaded.state_dict().items())
+    if muon:
+        assert all(not torch.equal(initial_weights[name], reloaded.state_dict()[name])
+                   for name in settings["optimizer_groups"][1]["param_names"])
     saved_tokenizer = AutoTokenizer.from_pretrained(output)
     assert saved_tokenizer.chat_template == recipe.CHAT_TEMPLATE
     results = json.loads((output / "evaluation.json").read_text())

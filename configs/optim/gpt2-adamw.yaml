@@ -1,0 +1,18 @@
+groups:
+  - name: embeddings
+    patterns: [transformer.wte.weight, lm_head.weight]
+    optimizer: adamw
+    hparams:
+      lr: 1.0e-4
+      betas: [0.8, 0.995]
+  - name: position_embeddings
+    patterns: [transformer.wpe.weight]
+    optimizer: adamw
+    hparams:
+      lr: 2.0e-5
+  - name: transformer
+    patterns: ["transformer.h.*", "transformer.ln_f.*"]
+    optimizer: adamw
+    hparams:
+      lr: 2.0e-5
+      weight_decay: 0.01

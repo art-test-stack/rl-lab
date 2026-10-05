@@ -101,6 +101,12 @@ def init_distributed(
         for key in ("RANK", "LOCAL_RANK", "WORLD_SIZE")
     ), "RANK, LOCAL_RANK and WORLD_SIZE must be set for distributed execution."
 
+    if device_type == "mps":
+        raise ValueError("Distributed execution requires CPU/Gloo or CUDA/NCCL")
+    if not dist.is_initialized():
+        # Select the requested backend instead of auto-detecting host accelerators.
+        dist.init_process_group(backend="nccl" if device_type == "cuda" else "gloo")
+
     mesh = init_device_mesh(
         device_type=device_type,
         mesh_shape=(world_size,),

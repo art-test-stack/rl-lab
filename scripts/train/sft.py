@@ -1,8 +1,6 @@
 """SFT on short, one-turn SmolTalk exchanges; evaluate with rl_lab tasks."""
 
 from dataclasses import asdict, dataclass
-import json
-import os
 from pathlib import Path
 import re
 import warnings
@@ -12,13 +10,16 @@ import torch
 from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, set_seed
 from trl import SFTConfig, SFTTrainer
 
+from rl_lab.distributed import cleanup_dist_groups, init_distributed
 from rl_lab.engines.transformers import TransformersEngine
 from rl_lab.eval import evaluate_task
+from rl_lab.optim import load_optimizer_config, setup_optimizer, trainer_model_for_generation
 from rl_lab.tasks.gpqa import GPQA
 from rl_lab.tasks.gsm8k import GSM8K
 from rl_lab.tasks.smoltalk import SmolTalk
 from rl_lab.tasks.spellingbee import SimpleSpelling, SpellingBee
 from rl_lab.utils.default import MODELS_FOLDER
+from rl_lab.utils.report import get_report
 
 
 SOURCE = "smol-magpie-ultra-short"
@@ -43,6 +44,7 @@ class RecipeArguments:
     eval_limit: int = 64
     eval_tasks: str = "smoltalk"
     max_new_tokens: int = 128
+    optimizer_config: str | None = None
 
 
 def export_dataset(task, tokenizer, limit, max_length, *, split_turns=False, max_new_tokens=0):
@@ -134,6 +136,7 @@ def main():
     model_name = model_path.name if model_path.is_dir() else arguments.model_name_or_path.replace("/", "--")
     parser.set_defaults(output_dir=str(MODELS_FOLDER / model_name / "sft" / run_name), run_name=run_name)
     recipe, config = parser.parse_args_into_dataclasses()
+    optimizer_recipe = load_optimizer_config(recipe.optimizer_config) if recipe.optimizer_config else None
     names = [name.strip() for name in recipe.eval_tasks.split(",")]
     if any(name not in {"smoltalk", *EVAL_TASKS} for name in names):
         parser.error(f"--eval-tasks supports smoltalk,{','.join(EVAL_TASKS)}")
@@ -141,12 +144,16 @@ def main():
         parser.error("Sample limits and --max-new-tokens must be positive")
     if config.max_length is None or config.max_length < 2:
         parser.error("--max-length must be at least 2")
-    if int(os.environ.get("WORLD_SIZE", "1")) != 1:
-        parser.error("This first recipe supports single-process training and evaluation")
+    if config.deepspeed:
+        parser.error("This recipe uses native PyTorch DDP/FSDP2, without DeepSpeed")
+    if config.fsdp and config.fsdp_config.get("state_dict_type", "FULL_STATE_DICT") != "FULL_STATE_DICT":
+        parser.error("This recipe requires FSDP FULL_STATE_DICT for checkpoint reload and task evaluation")
     if config.packing or config.padding_free or not config.completion_only_loss:
         parser.error("This recipe requires answer-only loss with packing and padding-free disabled")
     output = Path(config.output_dir)
-    print(f"Training output: {output}", flush=True)
+    dist_ctx = init_distributed(device_type=config.device.type, random_seed=config.seed)
+    if dist_ctx.rank == 0:
+        print(f"Training output: {output}", flush=True)
     if output.exists() and any(output.iterdir()):
         parser.error("Choose an empty --output-dir to preserve existing runs")
 
@@ -157,7 +164,7 @@ def main():
         parser.error("--max-length exceeds the model context window")
     if recipe.max_new_tokens >= context_length:
         parser.error("--max-new-tokens must leave room for a prompt in the model context window")
-    # ponytail: validation excludes oversized conversations; windowed evaluation can cover them later.
+    # validation excludes oversized conversations; windowed evaluation can cover them later.
     warnings.warn(
         f"Validation keeps only whole conversations that fit the model's {context_length}-token "
         "context and generation budget; oversized conversations will be discarded. "
@@ -180,35 +187,49 @@ def main():
         model=recipe.model_name_or_path, args=config, processing_class=tokenizer,
         train_dataset=train, eval_dataset=held_out,
     )
-    output.mkdir(parents=True, exist_ok=True)
-    train.to_json(output / "train.jsonl")
-    held_out.to_json(output / "smoltalk-test.jsonl")
-    (output / "recipe.json").write_text(json.dumps({
+    try:
+        optimizer_groups = setup_optimizer(trainer, optimizer_recipe)
+    except ValueError as error:
+        parser.error(str(error))
+    trainer.accelerator.wait_for_everyone()
+    report = get_report(output)
+    if dist_ctx.rank == 0:
+        train.to_json(output / "train.jsonl")
+        held_out.to_json(output / "smoltalk-test.jsonl")
+    report.write_json("recipe.json", {
         **asdict(recipe), "source": SOURCE, "training": config.to_dict(),
+        "world_size": dist_ctx.world_size,
         "training_max_length": train_max_length, "validation_context_length": context_length,
         "train_examples": len(train), "eval_examples": len(held_out),
         "train_fingerprint": train._fingerprint, "eval_fingerprint": held_out._fingerprint,
-    }, indent=2), encoding="utf-8")
+        "optimizer_recipe": optimizer_recipe, "optimizer_groups": optimizer_groups,
+    })
 
     before = {"smoltalk_loss": trainer.evaluate()["eval_loss"]}
-    with TransformersEngine(trainer.model, tokenizer) as engine:
-        before["tasks"] = evaluate_tasks(
-            engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
-        )
+    if dist_ctx.rank == 0 or trainer.is_fsdp_enabled:
+        with trainer_model_for_generation(trainer) as model, TransformersEngine(model, tokenizer) as engine:
+            before["tasks"] = evaluate_tasks(
+                engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
+            )
+        del model
+    trainer.accelerator.wait_for_everyone()
     trainer.train()
     trainer.save_model()
     trainer.save_state()
     after = {"smoltalk_loss": trainer.evaluate()["eval_loss"]}
+    trainer.accelerator.wait_for_everyone()
     device = config.device
     del trainer
-    with TransformersEngine.load(str(output), device=device, dtype=torch.float32) as engine:
-        after["tasks"] = evaluate_tasks(
-            engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
-        )
-    results = {"before": before, "after": after}
-    (output / "evaluation.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
-    print(json.dumps(results, indent=2))
+    if dist_ctx.rank == 0:
+        with TransformersEngine.load(str(output), device=device, dtype=torch.float32) as engine:
+            after["tasks"] = evaluate_tasks(
+                engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
+            )
+    report.write_json("evaluation.json", {"before": before, "after": after}, echo=True)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        cleanup_dist_groups()

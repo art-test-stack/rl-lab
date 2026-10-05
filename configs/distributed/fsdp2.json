@@ -1,0 +1,6 @@
+{
+  "version": 2,
+  "reshard_after_forward": false,
+  "auto_wrap_policy": "TRANSFORMER_BASED_WRAP",
+  "state_dict_type": "FULL_STATE_DICT"
+}
