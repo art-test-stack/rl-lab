@@ -16,7 +16,7 @@ from transformers import set_seed
 from transformers.utils import get_json_schema
 
 from rl_lab.engines.transformers import TransformersEngine
-from rl_lab.eval import EvalResult, evaluate_task
+from rl_lab.eval import EvalResult, evaluate_categorical, evaluate_task
 from rl_lab.eval.evaluator import _prepare_prompt
 from rl_lab.tasks.arc import ARC
 from rl_lab.tasks.gpqa import GPQA
@@ -27,8 +27,7 @@ from rl_lab.tasks.spellingbee import SimpleSpelling, SpellingBee
 from rl_lab.tools.exec import make_python_tool
 from rl_lab.utils.common import detect_device_type
 from rl_lab.utils.default import MODELS_FOLDER, REPORTS_FOLDER
-from scripts.eval.mmlu import evaluate as evaluate_categorical
-from scripts.agent_python import RESPONSE_TEMPLATE as QWEN_RESPONSE_TEMPLATE
+from rl_lab.tokenizer import QWEN_RESPONSE_TEMPLATE
 
 
 TASKS = {
