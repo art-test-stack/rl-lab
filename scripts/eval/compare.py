@@ -2,6 +2,7 @@
 
 import argparse
 from dataclasses import asdict
+from datetime import datetime, timezone
 import gc
 import json
 import math
@@ -25,6 +26,7 @@ from rl_lab.tasks.mmlu import MMLU
 from rl_lab.tasks.spellingbee import SimpleSpelling, SpellingBee
 from rl_lab.tools.exec import make_python_tool
 from rl_lab.utils.common import detect_device_type
+from rl_lab.utils.default import MODELS_FOLDER, REPORTS_FOLDER
 from scripts.eval.mmlu import evaluate as evaluate_categorical
 from scripts.agent_python import RESPONSE_TEMPLATE as QWEN_RESPONSE_TEMPLATE
 
@@ -57,6 +59,25 @@ TOOL_INSTRUCTION = (
     "You may use the python tool for calculations. Print the result in your code, "
     "then use the tool response to answer the user."
 )
+
+
+def resolve_model(reference):
+    """Resolve HF_ID:METHOD[:RUN] in the training cache; preserve other paths/IDs."""
+    if Path(reference).is_dir() or ":" not in reference:
+        return reference
+    parts = reference.split(":")
+    if len(parts) not in (2, 3):
+        raise ValueError("Cached models use HF_ID:METHOD[:RUN]")
+    model_id, method = parts[:2]
+    run = parts[2] if len(parts) == 3 else "default"
+    if (len(model_id.split("/")) > 2 or not all(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part)
+            for part in [*model_id.split("/"), method, run])):
+        raise ValueError("Invalid cached model ID, method or run name")
+    path = MODELS_FOLDER / model_id.replace("/", "--") / method / run
+    if not (path / "config.json").is_file():
+        raise ValueError(f"No cached checkpoint for {reference}: expected {path}")
+    return str(path)
 
 
 def select_tool_models(tools, value, labels):
@@ -212,12 +233,41 @@ def plot_results(results, output):
             fig.savefig(plots / f"{slug}.{extension}", dpi=180)
         plt.close(fig)
 
+    benchmarks = [name for name in names if not name.startswith("core_")]
+    if any("core/core" in model.get("core_metrics", {}) for model in results["models"]):
+        benchmarks.append("core")
+    fig, ax = plt.subplots(figsize=(max(8, 1.5 * len(benchmarks)), 5), layout="constrained")
+    width = 0.8 / len(results["models"])
+    for index, model in enumerate(results["models"]):
+        scores = [model.get("core_metrics", {}).get("core/core", float("nan"))
+                  if name == "core" else model["tasks"].get(name, {}).get("score", float("nan"))
+                  for name in benchmarks]
+        positions = [position - 0.4 + width * (index + 0.5) for position in range(len(benchmarks))]
+        bars = ax.bar(positions, scores, width=width, label=model["label"])
+        ax.bar_label(bars, labels=[f"{score:.1%}" if math.isfinite(score) else "" for score in scores],
+                     padding=3, fontsize=8)
+    ax.set_xticks(range(len(benchmarks)), [
+        "CORE\n(centered accuracy)" if name == "core" else name for name in benchmarks
+    ], rotation=20, ha="right")
+    ax.set_ylim(min(0, ax.get_ylim()[0]) * 1.4, max(1.15, ax.get_ylim()[1]))
+    ax.set_ylabel("Score (accuracy; CORE: centered accuracy)")
+    ax.set_title("Model comparison across benchmarks")
+    ax.axhline(0, color="gray", linewidth=0.8)
+    ax.grid(axis="y", alpha=0.2)
+    ax.set_axisbelow(True)
+    ax.legend()
+    for extension in ("png", "pdf"):
+        fig.savefig(plots / f"overview.{extension}", dpi=180)
+    plt.close(fig)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", action="append", required=True, metavar="LABEL=PATH")
+    parser.add_argument("--model", action="append", required=True, metavar="LABEL=MODEL",
+                        help="HF ID, local checkpoint path, or HF_ID:METHOD[:RUN]")
     parser.add_argument("--tasks", default=None, help="Comma-separated tasks; omitted, None or all runs all scored tasks")
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path,
+                        help="Output directory; default: CACHE_DIR/reports/compare-<UTC timestamp>")
     parser.add_argument("--device-type", choices=["cpu", "mps", "cuda"], default=None)
     parser.add_argument("--max-per-task", type=int, default=-1)
     parser.add_argument("--batch-size", type=int, default=1)
@@ -237,7 +287,10 @@ def main():
         label, separator, path = value.partition("=")
         if not separator or not label.strip() or not path.strip():
             parser.error("Each --model must be LABEL=PATH with a nonempty label and path")
-        models.append((label.strip(), path.strip()))
+        try:
+            models.append((label.strip(), resolve_model(path.strip())))
+        except ValueError as error:
+            parser.error(str(error))
     if len({label for label, _ in models}) != len(models):
         parser.error("Model labels must be unique")
     try:
@@ -254,7 +307,8 @@ def main():
         parser.error("--batch-size and --max-new-tokens must be positive")
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         parser.error("This script supports single-process evaluation")
-    output = args.output_dir
+    output = args.output_dir or REPORTS_FOLDER / f"compare-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}"
+    print(f"Evaluation output: {output}", flush=True)
     if output.exists() and any(output.iterdir()):
         parser.error("Choose an empty --output-dir to preserve previous results")
     # Fail before expensive evaluation if the optional plotting dependency is absent.

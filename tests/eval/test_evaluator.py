@@ -85,7 +85,7 @@ def test_mean_score_and_limit_larger_than_dataset():
 def test_callback_writes_wrong_first_report_across_batches(tmp_path, monkeypatch):
     from rl_lab.eval.report import EvaluationReport
 
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("rl_lab.eval.report.REPORTS_FOLDER", tmp_path / "reports")
     rows = [row(), row("wrong"), row(), row()]
     rows[0]["messages"][0]["content"] = "First question with choices A/B"
     rows[1]["messages"][0]["content"] = "Wrong question with ```code```"
@@ -107,7 +107,7 @@ def test_callback_writes_wrong_first_report_across_batches(tmp_path, monkeypatch
     ]
     path = report.write(result)
     text = path.read_text(encoding="utf-8")
-    assert path.parent.name == "report"
+    assert path.parent == tmp_path / "reports"
     assert "Model: Qwen/test" in text
     assert "Accuracy: 0.6667 | Examples: 3 | Wrong: 1 | Correct: 2" in text
     assert "- max_new_tokens: 512" in text

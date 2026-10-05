@@ -8,6 +8,7 @@ TODOs:
 """
 
 import os, csv, time, json, yaml, shutil, random, zipfile, tempfile
+from inspect import signature
 
 from jinja2 import Template
 import torch
@@ -147,21 +148,26 @@ def batch_sequences_lm(tokenizer, prompts):
 
 
 @torch.no_grad()
-def forward_model(model, input_ids):
+def forward_model(model, input_ids, start_idx=0):
     """
-    Take BxT tensor of token ids, return BxT tensor of losses and argmax predictions.
+    Return losses and predictions for positions starting at start_idx.
+    Process the full context, but project only its suffix when the model supports it.
     The last column of losses is set to nan because we don't have autoregressive targets there.
     """
     batch_size, seq_len = input_ids.size()
     # Roll the tensor to the left by one position to get the (autoregressive) target ids
     target_ids = torch.roll(input_ids, shifts=-1, dims=1)
-    outputs = model(input_ids=input_ids, use_cache=False)
-    logits = outputs.logits
+    model_kwargs = {}
+    if start_idx and 'logits_to_keep' in signature(getattr(model, 'forward', model)).parameters:
+        model_kwargs['logits_to_keep'] = seq_len - start_idx
+    outputs = model(input_ids=input_ids, use_cache=False, **model_kwargs)
+    logits = outputs.logits if model_kwargs else outputs.logits[:, start_idx:]
+    target_ids = target_ids[:, start_idx:]
     losses = torch.nn.functional.cross_entropy(
         logits.reshape(-1, logits.size(-1)),
         target_ids.reshape(-1),
         reduction='none',
-    ).view(batch_size, seq_len)
+    ).view(batch_size, seq_len - start_idx)
 
     # Set the last column to be nan because there is no autoregressive loss there
     losses[:, -1] = float('nan')
@@ -223,8 +229,12 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
     input_ids = stack_sequences(tokens, pad_token_id)
     input_ids = input_ids.to(device)
 
-    # Forward the model, get the autoregressive loss and argmax prediction at each token
-    losses, predictions = forward_model(model, input_ids)
+    # Only score the suffix containing answers; the preceding position predicts
+    # the first answer token. Keep indices relative to the returned suffix.
+    offset = max(0, min(start_idxs) - 1)
+    losses, predictions = forward_model(model, input_ids, start_idx=offset)
+    start_idxs = [s - offset for s in start_idxs]
+    end_idxs = [e - offset for e in end_idxs]
 
     # See if the losses/predictions come out correctly
     if task_type == 'language_modeling':
@@ -233,7 +243,7 @@ def evaluate_example(idx, model, tokenizer, data, device, task_meta):
         ei = end_idxs[0]
         # predictions[i] predict input_ids[i+1] autoregressively
         predicted_tokens = predictions[0, si-1:ei-1]
-        actual_tokens = input_ids[0, si:ei]
+        actual_tokens = input_ids[0, si+offset:ei+offset]
         is_correct = torch.all(predicted_tokens == actual_tokens).item()
     elif task_type in ['multiple_choice', 'schema']:
         # For MC/schema: find the option with lowest average loss

@@ -4,7 +4,6 @@ Run from the repository root:
 
 ```bash
 uv run --locked --group train python scripts/train/sft.py \
-    --output-dir report/sft-gpt2 \
     --train-limit 1024 --eval-limit 64 \
     --eval-tasks smoltalk,gsm8k
 ```
@@ -18,6 +17,17 @@ are not included as context, so follow-up questions may lose useful information.
 Empty and oversized training exchanges are excluded. `--train-limit` counts
 accepted exchanges after expansion and length filtering. No task classification
 is done.
+
+Training artifacts default to `CACHE_DIR/models/openai-community--gpt2/sft/default`.
+`CACHE_DIR` is resolved from `RLLAB_CACHE_DIR`, defaulting to `~/.cache/rl_lab`.
+Hub model names replace `/` with `--` in the directory name; local model paths
+use their directory basename. `--run-name run-2` selects `sft/run-2`, keeping
+experiments with the same model and method separate. Run names must start with
+a letter or digit and contain only letters, digits, `.`, `_`, or `-`.
+Evaluate that run with `--model 'After SFT=openai-community/gpt2:sft:run-2'`.
+`--output-dir` overrides the default path. Existing
+populated directories are rejected; choose another output path for another run.
+Comparison and standalone evaluation reports go under `CACHE_DIR/reports`.
 
 Validation conversations remain whole: all earlier messages form the prompt,
 and the final assistant reply is the answer-only loss target. The script warns
@@ -91,7 +101,9 @@ context limit separately.
 After a run completes, regenerate its figures with:
 
 ```bash
-uv run --locked --with matplotlib python scripts/plot_training.py report/sft-gpt2-m2
+cache_dir="${RLLAB_CACHE_DIR:-$HOME/.cache/rl_lab}"
+uv run --locked --with matplotlib python scripts/plot_training.py \
+    "$cache_dir/models/openai-community--gpt2/sft/default"
 ```
 
 Replace the directory with any completed SFT run. The script reads its saved JSON

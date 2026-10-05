@@ -1,8 +1,9 @@
 """Readable per-example benchmark reports, with wrong answers first."""
 
 from datetime import datetime, timezone
-from pathlib import Path
 import re
+
+from rl_lab.utils.default import REPORTS_FOLDER
 
 
 def _text(content):
@@ -37,7 +38,7 @@ class EvaluationReport:
     def write(self, result):
         timestamp = datetime.now(timezone.utc)
         slug = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{self.task_name}-{self.model_name}")
-        directory = Path("report")
+        directory = REPORTS_FOLDER
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{slug}-{timestamp:%Y%m%dT%H%M%S%fZ}.md"
         wrong = [record for record in self.examples if record[3] != 1]

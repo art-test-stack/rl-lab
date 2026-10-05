@@ -13,7 +13,8 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
-def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, monkeypatch, tmp_path):
+@pytest.mark.parametrize("run_name", [None, "cpu-smoke"])
+def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, monkeypatch, tmp_path, run_name):
     pytest.importorskip("trl")
     path = Path(__file__).resolve().parents[2] / "scripts" / "train" / "sft.py"
     spec = importlib.util.spec_from_file_location("sft_recipe", path)
@@ -92,10 +93,12 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
             assert self.args.max_length is None
 
     monkeypatch.setattr(recipe, "SFTTrainer", CheckedTrainer)
-    output = tmp_path / "run"
+    monkeypatch.setattr(recipe, "MODELS_FOLDER", tmp_path / "models")
+    output = tmp_path / "models" / "model" / "sft" / (run_name or "default")
     monkeypatch.setattr(sys, "argv", [
         str(path), "--model-name-or-path", str(local_model),
-        "--output-dir", str(output), "--use-cpu", "--max-steps", "1",
+        *(["--run-name", run_name] if run_name else []),
+        "--use-cpu", "--max-steps", "1",
         "--max-length", "20", "--max-new-tokens", "4",
         "--train-limit", "2", "--eval-limit", "2", "--eval-tasks", "gsm8k,smoltalk",
         "--disable-tqdm", "true", "--dataloader-pin-memory", "false",
@@ -115,6 +118,7 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
     assert settings["source"] == recipe.SOURCE
     assert settings["train_examples"] == settings["eval_examples"] == 2
     assert settings["training"]["completion_only_loss"] is True
+    assert settings["training"]["run_name"] == (run_name or "default")
     assert settings["training_max_length"] == 20
     assert settings["validation_context_length"] == model.config.max_position_embeddings
     validation = [json.loads(line) for line in (output / "smoltalk-test.jsonl").read_text().splitlines()]

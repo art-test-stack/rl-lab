@@ -2,6 +2,7 @@ import os, shutil
 import datetime
 from .common import get_banner, print0, run_command
 from .system import get_git_info, get_gpu_info, get_system_info, estimate_cost
+from .default import REPORTS_FOLDER
 # Source - https://stackoverflow.com/a/45846841
 # Posted by rtaft
 # Retrieved 2026-02-14, License - CC BY-SA 3.0
@@ -305,8 +306,7 @@ def get_report():
     import os
     ddp_rank = int(os.environ.get("RANK", 0))
     if ddp_rank == 0:
-        report_dir = os.path.join(".", "report")
-        return Report(report_dir)
+        return Report(REPORTS_FOLDER)
     else:
         return DummyReport()
 

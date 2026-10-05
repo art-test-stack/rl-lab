@@ -16,6 +16,21 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
     pytest.importorskip("matplotlib")
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2]))
     from scripts.eval import compare
+    from matplotlib.figure import Figure
+
+    overview = {}
+    savefig = Figure.savefig
+
+    def capture_overview(figure, path, **kwargs):
+        if Path(path).name == "overview.png":
+            axis = figure.axes[0]
+            overview["benchmarks"] = [tick.get_text() for tick in axis.get_xticklabels()]
+            overview["scores"] = [[bar.get_height() for bar in bars] for bars in axis.containers]
+            overview["models"] = [text.get_text() for text in axis.get_legend().get_texts()]
+            overview["limits"] = axis.get_ylim()
+        return savefig(figure, path, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", capture_overview)
 
     class LocalTask(Task):
         def __init__(self, kind):
@@ -63,17 +78,31 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
     monkeypatch.setattr(compare, "evaluate_task", run)
     monkeypatch.setattr(compare, "evaluate_categorical", categorical)
     monkeypatch.setattr("rl_lab.tasks.core.evaluate_core", lambda *a, **k: {
-        "core/core": 0.25, "all_core_results": {
+        "core/core": -0.25, "all_core_results": {
             "local": {"accuracy": 0.5, "num_examples": 11, "centered_result": 0.25},
         },
     })
-    output = tmp_path / "comparison"
-    monkeypatch.setattr(sys, "argv", ["compare", "--model", "After SFT=checkpoint",
+    monkeypatch.setattr(compare, "REPORTS_FOLDER", tmp_path / "reports")
+    monkeypatch.setattr(compare, "MODELS_FOLDER", tmp_path / "models")
+    checkpoint = tmp_path / "models" / "owner--model" / "sft" / "default"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text("{}")
+    named_checkpoint = checkpoint.parent / "run-2"
+    named_checkpoint.mkdir()
+    (named_checkpoint / "config.json").write_text("{}")
+    assert compare.resolve_model("owner/model:sft:run-2") == str(named_checkpoint)
+    assert compare.resolve_model(str(checkpoint)) == str(checkpoint)
+    with pytest.raises(ValueError, match="No cached checkpoint"):
+        compare.resolve_model("other-owner/model:sft")
+    with pytest.raises(ValueError, match="Invalid cached"):
+        compare.resolve_model("owner/model:sft:../other")
+    monkeypatch.setattr(sys, "argv", ["compare", "--model", "After SFT=owner/model:sft",
                                        "--model", "Baseline=baseline", "--max-per-task", "11",
-                                       "--device-type", "cpu", "--output-dir", str(output)])
+                                       "--device-type", "cpu"])
     compare.main()
+    output, = (tmp_path / "reports").glob("compare-*")
     results = json.loads((output / "evaluation.json").read_text())
-    assert loads == ["checkpoint", "baseline"]  # No before checkpoint is required.
+    assert loads == [str(checkpoint), "baseline"]  # No before checkpoint is required.
     assert results["settings"]["tasks"] == compare.select_tasks(None)
     assert compare.select_tasks("None") == compare.select_tasks("all") == list(compare.TASKS)
     assert compare.select_tasks("gsm8k,arc,mmlu") == ["gsm8k", "arc_easy", "arc_challenge", "mmlu"]
@@ -81,7 +110,7 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
     for index, entry in enumerate(results["models"]):
         assert entry["complete"]
         assert set(entry["tasks"]) == set(compare.TASKS) - {"core"} | {"core_local"}
-        assert entry["core_metrics"]["core/core"] == 0.25
+        assert entry["core_metrics"]["core/core"] == -0.25
         record = json.loads((output / f"model-{index}-gsm8k.jsonl").read_text())
         assert record["reference"] == "answer"
         assert record["prediction"] == "generated"
@@ -90,6 +119,14 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
     for name in results["models"][0]["tasks"]:
         assert (output / "plots" / f"{name}.png").stat().st_size > 0
         assert (output / "plots" / f"{name}.pdf").stat().st_size > 0
+    assert overview["benchmarks"] == list(compare.TASKS)[:-1] + ["CORE\n(centered accuracy)"]
+    assert overview["models"] == ["After SFT", "Baseline"]
+    expected_scores = [results["models"][0]["tasks"][name]["score"]
+                       for name in compare.TASKS if name != "core"] + [-0.25]
+    assert overview["scores"] == [expected_scores, expected_scores]
+    assert overview["limits"][0] < -0.25
+    for extension in ("png", "pdf"):
+        assert (output / "plots" / f"overview.{extension}").stat().st_size > 0
     with pytest.raises(ValueError, match="Unknown/unscored"):
         compare.select_tasks("smoltalk")
 

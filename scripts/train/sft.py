@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
+import re
 import warnings
 
 from datasets import Dataset
@@ -17,6 +18,7 @@ from rl_lab.tasks.gpqa import GPQA
 from rl_lab.tasks.gsm8k import GSM8K
 from rl_lab.tasks.smoltalk import SmolTalk
 from rl_lab.tasks.spellingbee import SimpleSpelling, SpellingBee
+from rl_lab.utils.default import MODELS_FOLDER
 
 
 SOURCE = "smol-magpie-ultra-short"
@@ -118,12 +120,19 @@ def evaluate_tasks(engine, names, smoltalk, limit, max_new_tokens):
 def main():
     parser = HfArgumentParser((RecipeArguments, SFTConfig), description=__doc__)
     parser.set_defaults(
-        output_dir="report/sft-gpt2", max_length=512, num_train_epochs=1,
+        max_length=512, num_train_epochs=1,
         per_device_train_batch_size=2, per_device_eval_batch_size=2,
         bf16=False, gradient_checkpointing=False, completion_only_loss=True,
         loss_type="nll", save_strategy="epoch", save_total_limit=1,
         prediction_loss_only=True, report_to="none",
     )
+    arguments, _ = parser.parse_known_args()
+    run_name = arguments.run_name or "default"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", run_name):
+        parser.error("--run-name must start with a letter or digit and contain only letters, digits, '.', '_' or '-'")
+    model_path = Path(arguments.model_name_or_path)
+    model_name = model_path.name if model_path.is_dir() else arguments.model_name_or_path.replace("/", "--")
+    parser.set_defaults(output_dir=str(MODELS_FOLDER / model_name / "sft" / run_name), run_name=run_name)
     recipe, config = parser.parse_args_into_dataclasses()
     names = [name.strip() for name in recipe.eval_tasks.split(",")]
     if any(name not in {"smoltalk", *EVAL_TASKS} for name in names):
@@ -137,6 +146,7 @@ def main():
     if config.packing or config.padding_free or not config.completion_only_loss:
         parser.error("This recipe requires answer-only loss with packing and padding-free disabled")
     output = Path(config.output_dir)
+    print(f"Training output: {output}", flush=True)
     if output.exists() and any(output.iterdir()):
         parser.error("Choose an empty --output-dir to preserve existing runs")
 

@@ -5,7 +5,7 @@ import os
 
 from rl_lab.tasks.core import evaluate_core
 from rl_lab.distributed import init_distributed, cleanup_dist_groups
-from rl_lab.utils.default import CACHE_DIR
+from rl_lab.utils.default import REPORTS_FOLDER
 from rl_lab.utils.huggingface import load_hf_model, get_hf_token_bytes
 from rl_lab.utils.common import print0, detect_device_type
 
@@ -167,7 +167,7 @@ def main():
 
         # Write CSV output
         if ddp_rank == 0:
-            base_dir = CACHE_DIR
+            base_dir = REPORTS_FOLDER
             output_csv_path = os.path.join(base_dir, "base_eval", f"{model_slug}.csv")
             os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
             with open(output_csv_path, 'w', encoding='utf-8', newline='') as f:

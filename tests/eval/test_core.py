@@ -103,13 +103,13 @@ def test_core_script_preserves_all_metrics_in_csv_and_report(
     if max_per_task_arg is not None:
         argv.append(f"--max-per-task={max_per_task_arg}")
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.setattr(core, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(core, "REPORTS_FOLDER", tmp_path / "reports")
     monkeypatch.setattr(core, "load_hf_model", lambda *args: (model, tokenizer))
     monkeypatch.setattr(core, "evaluate_core", evaluate)
     monkeypatch.setattr(report, "get_report", lambda: report.Report(tmp_path / "report"))
     core.main()
 
-    with (tmp_path / "base_eval/local-model.csv").open(newline="") as f:
+    with (tmp_path / "reports/base_eval/local-model.csv").open(newline="") as f:
         rows = list(csv.DictReader(f))
     assert rows == [
         {key: str(value) for key, value in {
