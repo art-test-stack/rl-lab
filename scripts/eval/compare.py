@@ -26,7 +26,7 @@ from rl_lab.tasks.mmlu import MMLU
 from rl_lab.tasks.spellingbee import SimpleSpelling, SpellingBee
 from rl_lab.tools.exec import make_python_tool
 from rl_lab.utils.common import detect_device_type
-from rl_lab.utils.default import REPORTS_FOLDER
+from rl_lab.utils.default import MODELS_FOLDER, REPORTS_FOLDER
 from scripts.eval.mmlu import evaluate as evaluate_categorical
 from scripts.agent_python import RESPONSE_TEMPLATE as QWEN_RESPONSE_TEMPLATE
 
@@ -59,6 +59,25 @@ TOOL_INSTRUCTION = (
     "You may use the python tool for calculations. Print the result in your code, "
     "then use the tool response to answer the user."
 )
+
+
+def resolve_model(reference):
+    """Resolve HF_ID:METHOD[:RUN] in the training cache; preserve other paths/IDs."""
+    if Path(reference).is_dir() or ":" not in reference:
+        return reference
+    parts = reference.split(":")
+    if len(parts) not in (2, 3):
+        raise ValueError("Cached models use HF_ID:METHOD[:RUN]")
+    model_id, method = parts[:2]
+    run = parts[2] if len(parts) == 3 else "default"
+    if (len(model_id.split("/")) > 2 or not all(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part)
+            for part in [*model_id.split("/"), method, run])):
+        raise ValueError("Invalid cached model ID, method or run name")
+    path = MODELS_FOLDER / model_id.replace("/", "--") / method / run
+    if not (path / "config.json").is_file():
+        raise ValueError(f"No cached checkpoint for {reference}: expected {path}")
+    return str(path)
 
 
 def select_tool_models(tools, value, labels):
@@ -217,7 +236,8 @@ def plot_results(results, output):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", action="append", required=True, metavar="LABEL=PATH")
+    parser.add_argument("--model", action="append", required=True, metavar="LABEL=MODEL",
+                        help="HF ID, local checkpoint path, or HF_ID:METHOD[:RUN]")
     parser.add_argument("--tasks", default=None, help="Comma-separated tasks; omitted, None or all runs all scored tasks")
     parser.add_argument("--output-dir", type=Path,
                         help="Output directory; default: CACHE_DIR/reports/compare-<UTC timestamp>")
@@ -240,7 +260,10 @@ def main():
         label, separator, path = value.partition("=")
         if not separator or not label.strip() or not path.strip():
             parser.error("Each --model must be LABEL=PATH with a nonempty label and path")
-        models.append((label.strip(), path.strip()))
+        try:
+            models.append((label.strip(), resolve_model(path.strip())))
+        except ValueError as error:
+            parser.error(str(error))
     if len({label for label, _ in models}) != len(models):
         parser.error("Model labels must be unique")
     try:

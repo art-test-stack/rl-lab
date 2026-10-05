@@ -6,15 +6,21 @@ The independent comparison script works with checkpoints from any training
 method. Labels are supplied explicitly; no before-training model is required:
 
 ```bash
-cache_dir="${RLLAB_CACHE_DIR:-$HOME/.cache/rl_lab}"
 uv run --locked --with matplotlib python -m scripts.eval.compare \
   --model 'GPT-2 (before SFT)=openai-community/gpt2' \
-  --model "GPT-2 (after SFT)=$cache_dir/models/openai-community--gpt2/sft" \
+  --model 'GPT-2 (after SFT)=openai-community/gpt2:sft' \
   --tasks gsm8k,mmlu \
   --max-per-task 16 --max-new-tokens 64 --device-type mps
 ```
 
 Add another `--model 'Baseline=MODEL_OR_CHECKPOINT'` to compare a baseline.
+Cached trained models use `HF_ID:METHOD[:RUN]`: `openai-community/gpt2:sft`
+selects `CACHE_DIR/models/openai-community--gpt2/sft/default`, while
+`openai-community/gpt2:sft:run-2` selects `sft/run-2` under the same model.
+Use the full Hugging Face ID to distinguish owners. Run and method names must
+start with a letter or digit and contain only letters, digits, `.`, `_`, or `-`.
+Missing cached checkpoints fail before loading datasets or evaluating models.
+Normal Hub IDs and existing local checkpoint directories still work.
 Omit the before model to evaluate only the trained checkpoint and/or baselines.
 By default each comparison writes to `CACHE_DIR/reports/compare-<UTC timestamp>`.
 `CACHE_DIR` uses `RLLAB_CACHE_DIR`, or `~/.cache/rl_lab` when unset.

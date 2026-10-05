@@ -68,13 +68,26 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
         },
     })
     monkeypatch.setattr(compare, "REPORTS_FOLDER", tmp_path / "reports")
-    monkeypatch.setattr(sys, "argv", ["compare", "--model", "After SFT=checkpoint",
+    monkeypatch.setattr(compare, "MODELS_FOLDER", tmp_path / "models")
+    checkpoint = tmp_path / "models" / "owner--model" / "sft" / "default"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "config.json").write_text("{}")
+    named_checkpoint = checkpoint.parent / "run-2"
+    named_checkpoint.mkdir()
+    (named_checkpoint / "config.json").write_text("{}")
+    assert compare.resolve_model("owner/model:sft:run-2") == str(named_checkpoint)
+    assert compare.resolve_model(str(checkpoint)) == str(checkpoint)
+    with pytest.raises(ValueError, match="No cached checkpoint"):
+        compare.resolve_model("other-owner/model:sft")
+    with pytest.raises(ValueError, match="Invalid cached"):
+        compare.resolve_model("owner/model:sft:../other")
+    monkeypatch.setattr(sys, "argv", ["compare", "--model", "After SFT=owner/model:sft",
                                        "--model", "Baseline=baseline", "--max-per-task", "11",
                                        "--device-type", "cpu"])
     compare.main()
     output, = (tmp_path / "reports").glob("compare-*")
     results = json.loads((output / "evaluation.json").read_text())
-    assert loads == ["checkpoint", "baseline"]  # No before checkpoint is required.
+    assert loads == [str(checkpoint), "baseline"]  # No before checkpoint is required.
     assert results["settings"]["tasks"] == compare.select_tasks(None)
     assert compare.select_tasks("None") == compare.select_tasks("all") == list(compare.TASKS)
     assert compare.select_tasks("gsm8k,arc,mmlu") == ["gsm8k", "arc_easy", "arc_challenge", "mmlu"]
