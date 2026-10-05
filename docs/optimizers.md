@@ -17,6 +17,10 @@ uv run --locked --group train python scripts/train/sft.py \
 Choose a new run name if that output directory already exists. Add `--use-cpu`
 for CPU execution. The script prints resolved group hyperparameters and saves
 them, together with the loaded recipe, in `recipe.json`.
+The script uses `rl_lab.utils.report.get_report(output_dir)` to write recipe
+and evaluation JSON on rank zero. Existing Markdown callers keep the shared
+reports directory; `Report.write_json(filename, data, echo=True)` can also
+print the saved JSON.
 
 ```yaml
 groups:
@@ -140,7 +144,9 @@ group_settings = setup_optimizer(trainer, recipe)
 
 `setup_optimizer` reads Trainer defaults, installs the grouped optimizer, prints
 its resolved settings, and returns those settings for run metadata. Passing
-`None` leaves default optimizer setup in place. Scheduling and checkpointing
+`None` selects the Trainer's default optimizer. For DDP/FSDP2, the utility prepares
+the model and optimizer for training before an initial evaluation can register
+the model as prepared without a DDP wrapper. Scheduling and checkpointing
 remain with the Trainer.
 
 Weight decay is applied exactly to the selected groups; bias and normalization
@@ -148,7 +154,7 @@ parameters are not automatically excluded. Assign them to separate groups with
 zero decay if desired. Both `adamw` and `muon` groups are supported. The Trainer's
 `--optim` must remain `adamw_torch` or `adamw_torch_fused` to supply the AdamW
 defaults. Automatic width/batch hyperparameter scaling, custom warmdown and
-momentum schedules, and ZeRO integration are pending. The gpt-lab kernel must
+momentum schedules, and DeepSpeed integration are pending. The gpt-lab kernel must
 not be applied independently to matrix shards or flattened parameter partitions.
 
 ## Ordinary DDP
@@ -175,7 +181,7 @@ zero. Trainer handles model and optimizer checkpoint writes.
 
 Batch size is per rank: the effective batch is `per_device_train_batch_size *
 world_size * gradient_accumulation_steps`. Hyperparameters are not automatically
-scaled with world size. FSDP and DeepSpeed are rejected for this integration.
+scaled with world size. DeepSpeed is unsupported; native FSDP2 is described below.
 
 The offline integration test launches two real CPU/Gloo processes, verifies
 distinct training batches, identical weights and optimizer states across ranks,
@@ -183,6 +189,58 @@ and saved outputs. Its harness forces CPU accelerator discovery: with the
 current PyTorch/Accelerate versions, CPU barriers can otherwise select this
 Mac's MPS device even with `--use-cpu`. The training script does not patch this
 upstream behavior. CUDA/NCCL execution remains unvalidated.
+
+## Native FSDP2
+
+Use the same launch command on CUDA GPUs with these additional arguments:
+
+```bash
+--fsdp full_shard --fsdp-config configs/distributed/fsdp2.json
+```
+
+Trainer/Accelerate owns wrapping, gradient synchronization, mixed precision,
+and checkpointing. `init_distributed` selects CPU/Gloo or CUDA/NCCL explicitly
+and provides `dist_ctx`. The installed Accelerate integration requires a
+supported accelerator for FSDP2; the standalone optimizer test runs native
+PyTorch FSDP2 on CPU without Accelerate.
+
+AdamW updates sharded DTensors directly. Muon keeps its persistent momentum
+and variance state sharded, gathers one complete matrix, gradient, and its
+state at a time, runs the gpt-lab update on every rank, and restores local
+shards. This saves persistent memory but replicates orthogonalization compute
+and requires temporary full-matrix memory. Only a one-dimensional data-parallel
+mesh with row sharding is supported. All ranks must step the same active
+parameters in the same order; tensor parallelism, hybrid meshes, and flattened
+ZeRO partitions are unsupported.
+
+The example sets `reshard_after_forward=false`, retaining gathered parameters
+through backward. Initial generative evaluation runs identical requests on
+every FSDP rank. `trainer_model_for_generation` restores parameter shards on
+exit before Trainer prepares for training again. The SFT recipe requires
+`FULL_STATE_DICT` to export a Hugging Face model for final checkpoint reload
+and task evaluation.
+
+A real two-rank CPU test compares mixed AdamW/Muon updates and sharded state
+with an unsharded reference, including uneven row splits and checkpoint
+continuation through PyTorch Distributed Checkpoint. Both values of
+`reshard_after_forward` are checked. The actual TRL FSDP2 CUDA training and
+checkpoint path remains unvalidated; the existing single-device and DDP
+offline TRL checks remain regressions.
+
+## Trainer checkpoints
+
+TRL's `SFTTrainer` inherits Transformers' checkpoint lifecycle. Scheduled
+`checkpoint-*` saves include the model, optimizer, scheduler, Trainer state,
+and RNG state, with Accelerate handling FSDP state conversion and save/load.
+The grouped optimizer uses standard optimizer state dictionaries, so its
+Muon buffers participate in that lifecycle.
+
+`trainer.save_model()` exports the final model; `trainer.save_state()` writes
+Trainer state metadata. These two calls alone do not save optimizer and
+scheduler state for continuation. Use a scheduled training checkpoint with
+`trainer.train(resume_from_checkpoint=path)` to resume. The current SFT script
+calls `train()` without a resume argument and requires a fresh output directory;
+its final checkpoint reload is for evaluation, not resumed training.
 
 ### Distribution TODOs
 
