@@ -12,6 +12,8 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from rl_lab.optim import load_optimizer_config
+
 
 @pytest.mark.parametrize("run_name", [None, "cpu-smoke"])
 def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, monkeypatch, tmp_path, run_name):
@@ -27,6 +29,8 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
     tokenizer.save_pretrained(local_model)
     model.save_pretrained(local_model)
     initial_weights = {name: value.clone() for name, value in model.state_dict().items()}
+    optimizer_path = Path(__file__).resolve().parents[2] / "configs" / "optim" / "gpt2-adamw.yaml"
+    grouped = run_name == "cpu-smoke"
 
     def row(question, answer, source=recipe.SOURCE):
         return {"source": source, "messages": [
@@ -92,12 +96,31 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
             assert any(example["input_ids"] == ids for example in self.eval_dataset)
             assert self.args.max_length is None
 
+        def train(self, *args, **kwargs):
+            if grouped:
+                assert isinstance(self.optimizer, torch.optim.AdamW)
+                groups = self.optimizer.param_groups
+                assert [group["name"] for group in groups] == [
+                    "embeddings", "position_embeddings", "transformer",
+                ]
+                assert [group["lr"] for group in groups] == [1e-4, 2e-5, 2e-5]
+                assert [group["weight_decay"] for group in groups] == [0.0, 0.0, 0.01]
+                assert tuple(groups[0]["betas"]) == (0.8, 0.995)
+                assert tuple(groups[1]["betas"]) == (0.9, 0.98)
+                assert sum(len(group["params"]) for group in groups) == len(list(self.model.parameters()))
+            result = super().train(*args, **kwargs)
+            if grouped:
+                assert self.optimizer.state
+                assert all(state["step"] == 1 for state in self.optimizer.state.values())
+            return result
+
     monkeypatch.setattr(recipe, "SFTTrainer", CheckedTrainer)
     monkeypatch.setattr(recipe, "MODELS_FOLDER", tmp_path / "models")
     output = tmp_path / "models" / "model" / "sft" / (run_name or "default")
     monkeypatch.setattr(sys, "argv", [
         str(path), "--model-name-or-path", str(local_model),
         *(["--run-name", run_name] if run_name else []),
+        *(["--optimizer-config", str(optimizer_path), "--adam-beta2", "0.98"] if grouped else []),
         "--use-cpu", "--max-steps", "1",
         "--max-length", "20", "--max-new-tokens", "4",
         "--train-limit", "2", "--eval-limit", "2", "--eval-tasks", "gsm8k,smoltalk",
@@ -121,6 +144,17 @@ def test_sft_exports_masks_trains_and_evaluates_checkpoint(model, tokenizer, mon
     assert settings["training"]["run_name"] == (run_name or "default")
     assert settings["training_max_length"] == 20
     assert settings["validation_context_length"] == model.config.max_position_embeddings
+    if grouped:
+        assert settings["optimizer_config"] == str(optimizer_path)
+        assert settings["optimizer_recipe"] == load_optimizer_config(optimizer_path)
+        assert [group["lr"] for group in settings["optimizer_groups"]] == [1e-4, 2e-5, 2e-5]
+        assert settings["optimizer_groups"][0]["param_names"] == ["transformer.wte.weight"]
+        checkpoint = next(output.glob("checkpoint-*/optimizer.pt"))
+        saved_groups = torch.load(checkpoint, weights_only=True)["param_groups"]
+        assert [group["initial_lr"] for group in saved_groups] == [1e-4, 2e-5, 2e-5]
+    else:
+        assert settings["optimizer_recipe"] is None
+        assert settings["optimizer_groups"] is None
     validation = [json.loads(line) for line in (output / "smoltalk-test.jsonl").read_text().splitlines()]
     assert len(validation) == 2
     assert sum(example["prompt"].count("User:") == 3 for example in validation) == 1

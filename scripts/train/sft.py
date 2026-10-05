@@ -14,6 +14,7 @@ from trl import SFTConfig, SFTTrainer
 
 from rl_lab.engines.transformers import TransformersEngine
 from rl_lab.eval import evaluate_task
+from rl_lab.optim import load_optimizer_config, setup_optimizer
 from rl_lab.tasks.gpqa import GPQA
 from rl_lab.tasks.gsm8k import GSM8K
 from rl_lab.tasks.smoltalk import SmolTalk
@@ -43,6 +44,7 @@ class RecipeArguments:
     eval_limit: int = 64
     eval_tasks: str = "smoltalk"
     max_new_tokens: int = 128
+    optimizer_config: str | None = None
 
 
 def export_dataset(task, tokenizer, limit, max_length, *, split_turns=False, max_new_tokens=0):
@@ -134,6 +136,7 @@ def main():
     model_name = model_path.name if model_path.is_dir() else arguments.model_name_or_path.replace("/", "--")
     parser.set_defaults(output_dir=str(MODELS_FOLDER / model_name / "sft" / run_name), run_name=run_name)
     recipe, config = parser.parse_args_into_dataclasses()
+    optimizer_recipe = load_optimizer_config(recipe.optimizer_config) if recipe.optimizer_config else None
     names = [name.strip() for name in recipe.eval_tasks.split(",")]
     if any(name not in {"smoltalk", *EVAL_TASKS} for name in names):
         parser.error(f"--eval-tasks supports smoltalk,{','.join(EVAL_TASKS)}")
@@ -180,6 +183,10 @@ def main():
         model=recipe.model_name_or_path, args=config, processing_class=tokenizer,
         train_dataset=train, eval_dataset=held_out,
     )
+    try:
+        optimizer_groups = setup_optimizer(trainer, optimizer_recipe)
+    except ValueError as error:
+        parser.error(str(error))
     output.mkdir(parents=True, exist_ok=True)
     train.to_json(output / "train.jsonl")
     held_out.to_json(output / "smoltalk-test.jsonl")
@@ -188,6 +195,7 @@ def main():
         "training_max_length": train_max_length, "validation_context_length": context_length,
         "train_examples": len(train), "eval_examples": len(held_out),
         "train_fingerprint": train._fingerprint, "eval_fingerprint": held_out._fingerprint,
+        "optimizer_recipe": optimizer_recipe, "optimizer_groups": optimizer_groups,
     }, indent=2), encoding="utf-8")
 
     before = {"smoltalk_loss": trainer.evaluate()["eval_loss"]}

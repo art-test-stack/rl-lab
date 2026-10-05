@@ -62,6 +62,12 @@ training can enable `--bf16 true` where supported. Generation defaults to 128
 new tokens. Training lengths and validation/generation inputs must fit the model context.
 Use a new, empty output directory for each run.
 
+To test separate AdamW hyperparameters for named parameter groups, add
+`--optimizer-config configs/optim/gpt2-adamw.yaml --run-name grouped-adamw-test`.
+The configuration path accepts YAML or JSON. Resolved group settings are printed
+and saved in `recipe.json`; explicit group values override Trainer defaults.
+See [optimizer groups](optimizers.md) for the file format and current limits.
+
 ## Evaluation and artifacts
 
 `--eval-tasks` accepts a comma-separated list of `smoltalk`, `gsm8k`, `gpqa`,
