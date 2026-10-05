@@ -2,14 +2,14 @@
 
 import json
 
-from .adamw import build_adamw
+from .optimizer import build_optimizer
 
 
 def setup_optimizer(trainer, config: dict | None) -> list[dict] | None:
     """Install a grouped optimizer and return serializable group settings.
 
     A missing recipe leaves the trainer's default optimizer setup in place.
-    Currently supports native AdamW without DeepSpeed. The trainer continues
+    Supports native AdamW and gpt-lab Muon without DeepSpeed. The trainer continues
     to own scheduling, stepping, and checkpoints.
     """
     if config is None:
@@ -21,7 +21,7 @@ def setup_optimizer(trainer, config: dict | None) -> list[dict] | None:
         raise ValueError("This first grouped SFT integration supports single-process execution without DeepSpeed")
     _, defaults = trainer.get_optimizer_cls_and_kwargs(arguments, trainer.model)
     defaults["weight_decay"] = arguments.weight_decay
-    trainer.optimizer = build_adamw(trainer.model, config, **defaults)
+    trainer.optimizer = build_optimizer(trainer.model, config, **defaults)
     groups = [
         {key: value for key, value in group.items() if key != "params"}
         for group in trainer.optimizer.param_groups

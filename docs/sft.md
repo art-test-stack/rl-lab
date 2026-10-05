@@ -64,6 +64,8 @@ Use a new, empty output directory for each run.
 
 To test separate AdamW hyperparameters for named parameter groups, add
 `--optimizer-config configs/optim/gpt2-adamw.yaml --run-name grouped-adamw-test`.
+For mixed AdamW and gpt-lab Muon, use
+`--optimizer-config configs/optim/gpt2-muon.yaml --run-name grouped-muon-test`.
 The configuration path accepts YAML or JSON. Resolved group settings are printed
 and saved in `recipe.json`; explicit group values override Trainer defaults.
 See [optimizer groups](optimizers.md) for the file format and current limits.

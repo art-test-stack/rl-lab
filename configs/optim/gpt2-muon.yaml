@@ -1,0 +1,23 @@
+groups:
+  - name: embeddings
+    patterns: [transformer.wte.weight, lm_head.weight, transformer.wpe.weight]
+    optimizer: adamw
+    hparams:
+      lr: 1.0e-4
+      betas: [0.8, 0.995]
+  - name: matrices
+    patterns: ["transformer.h.*.attn.*.weight", "transformer.h.*.mlp.*.weight"]
+    optimizer: muon
+    hparams:
+      lr: 0.02
+      momentum: 0.95
+      beta: 0.9
+      ns_steps: 5
+      weight_decay: 0.0
+  - name: biases_and_norms
+    patterns: ["transformer.h.*.attn.*.bias", "transformer.h.*.mlp.*.bias",
+               "transformer.h.*.ln_*.*", "transformer.ln_f.*"]
+    optimizer: adamw
+    hparams:
+      lr: 2.0e-5
+      weight_decay: 0.0

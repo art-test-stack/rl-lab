@@ -1,9 +1,9 @@
 # Optimizer parameter groups
 
 Optimizer configuration lives in a `.yaml`, `.yml`, or `.json` file. The same
-configuration can be passed as a Python dictionary. This first implementation
-supports native AdamW with independent hyperparameters for each group. An
-example lives in `configs/optim/gpt2-adamw.yaml`.
+configuration can be passed as a Python dictionary. Each group selects native
+AdamW or the gpt-lab Muon variant and its own hyperparameters. Examples live in
+`configs/optim/gpt2-adamw.yaml` and `configs/optim/gpt2-muon.yaml`.
 
 Test it with the SFT script:
 
@@ -72,6 +72,63 @@ errors. In the SFT script, omitted values inherit the Trainer's AdamW defaults
 The existing Trainer scheduler applies its LR multiplier to every group's own
 initial LR. Use its existing schedule and warmup CLI options for this test.
 
+## Gpt-lab Muon
+
+Run the mixed AdamW/Muon example with:
+
+```bash
+uv run --locked --group train python scripts/train/sft.py \
+    --optimizer-config configs/optim/gpt2-muon.yaml \
+    --run-name grouped-muon-test \
+    --train-limit 64 --eval-limit 8 --max-steps 10 \
+    --logging-steps 1 --max-new-tokens 32
+```
+
+The example uses AdamW for embeddings, biases, and normalization parameters,
+and Muon for attention/MLP weight matrices. Choose the matrix patterns explicitly;
+there is no automatic routing based on tensor dimensions.
+
+```yaml
+- name: matrices
+  patterns: ["transformer.h.*.attn.*.weight", "transformer.h.*.mlp.*.weight"]
+  optimizer: muon
+  hparams:
+    lr: 0.02
+    momentum: 0.95
+    beta: 0.9
+    ns_steps: 5
+    weight_decay: 0.0
+```
+
+Muon is adapted from gpt-lab's kernel, preserving its Nesterov momentum,
+Polar Express coefficients, factored variance reduction, and cautious weight
+decay. It multiplies each matrix's base LR by
+`sqrt(max(1, rows / columns))`, using the parameter's stored shape. This differs
+from plain `torch.optim.Muon`. Source attribution and MIT license notices are
+in `THIRD_PARTY_NOTICES.md` and `LICENSES/`.
+
+Muon requires dense gradients and real floating-point 2D parameters. Within a
+named group, different shapes, devices, and dtypes are updated in separate
+batches. State is stored per parameter for standard checkpoints. Parameters
+without gradients receive no update, decay, or momentum change.
+
+Muon defaults are `lr=0.02`, `momentum=0.95`, `beta=0.9`, `ns_steps=5`, and
+`weight_decay=0.0`. `beta` controls the factored second moment, and `ns_steps`
+must be an integer from 1 to 5. AdamW CLI defaults such as betas, epsilon, fused
+execution, and learning rate apply only to AdamW groups; Muon uses its own
+defaults unless its group overrides them.
+
+`build_optimizer(model, config, **adamw_defaults)` returns native AdamW for
+AdamW-only recipes, `Muon` for Muon-only recipes, or `GroupedOptimizer` for
+mixed recipes. The mixed optimizer provides standard `step`, `zero_grad`,
+`state_dict`, and `load_state_dict` methods and keeps each group's LR visible
+to the Trainer scheduler. Groups must be defined at construction time.
+`build_adamw` remains available for AdamW-only configurations.
+
+The kernel runs eagerly. FP32 CPU math is checked against frozen outputs from
+the upstream gpt-lab kernel, and mixed optimization is checked through actual
+offline TRL training. GPU and mixed-precision runs have not been validated.
+
 Other Transformers or TRL training scripts can reuse the same setup:
 
 ```python
@@ -88,11 +145,13 @@ remain with the Trainer.
 
 Weight decay is applied exactly to the selected groups; bias and normalization
 parameters are not automatically excluded. Assign them to separate groups with
-zero decay if desired. Only `adamw` groups and `--optim adamw_torch` or
-`adamw_torch_fused` are supported in this first SFT integration. Muon, automatic
-hyperparameter scaling, custom warmdown and momentum schedules, and DDP/ZeRO
-integration are pending. The script currently requires single-process execution
-without DeepSpeed when using the grouped optimizer.
+zero decay if desired. Both `adamw` and `muon` groups are supported. The Trainer's
+`--optim` must remain `adamw_torch` or `adamw_torch_fused` to supply the AdamW
+defaults. Automatic width/batch hyperparameter scaling, custom warmdown and
+momentum schedules, and DDP/ZeRO integration are pending. The optimizer itself
+does not perform distributed communication; the SFT script currently requires
+single-process execution without DeepSpeed. The gpt-lab kernel must not be
+applied to ZeRO's flattened parameter partitions.
 
 Use scientific notation with a decimal point, such as `2.0e-5`, in YAML so
 PyYAML reads it as a number.
