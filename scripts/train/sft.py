@@ -211,6 +211,7 @@ def main():
             before["tasks"] = evaluate_tasks(
                 engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
             )
+        del model
     trainer.accelerator.wait_for_everyone()
     trainer.train()
     trainer.save_model()
