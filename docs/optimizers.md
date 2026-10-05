@@ -148,10 +148,58 @@ parameters are not automatically excluded. Assign them to separate groups with
 zero decay if desired. Both `adamw` and `muon` groups are supported. The Trainer's
 `--optim` must remain `adamw_torch` or `adamw_torch_fused` to supply the AdamW
 defaults. Automatic width/batch hyperparameter scaling, custom warmdown and
-momentum schedules, and DDP/ZeRO integration are pending. The optimizer itself
-does not perform distributed communication; the SFT script currently requires
-single-process execution without DeepSpeed. The gpt-lab kernel must not be
-applied to ZeRO's flattened parameter partitions.
+momentum schedules, and ZeRO integration are pending. The gpt-lab kernel must
+not be applied independently to matrix shards or flattened parameter partitions.
+
+## Ordinary DDP
+
+Launch the same SFT recipe with two processes, for example on two CUDA GPUs:
+
+```bash
+uv run --locked --group train torchrun --master-addr=127.0.0.1 \
+    --master-port=29500 --nproc-per-node=2 \
+    scripts/train/sft.py --optimizer-config configs/optim/gpt2-muon.yaml \
+    --run-name ddp-muon-test --train-limit 64 --eval-limit 8 \
+    --max-steps 10 --max-new-tokens 32
+```
+
+Choose an unused local port. Add `--use-cpu` for a CPU/Gloo run on a CPU-only
+host. Every rank stores the full model and full
+optimizer state. Trainer/Accelerate owns DDP gradient synchronization and data
+loading; each rank runs the same local AdamW/Muon updates on synchronized
+gradients. Muon performs no collectives or matrix sharding. The script uses
+`rl_lab.distributed.init_distributed` and `dist_ctx` for its process mesh and
+rank-aware work. Loss evaluation runs on all ranks; dataset exports, recipe
+metadata, generative task evaluation, and evaluation JSON are written by rank
+zero. Trainer handles model and optimizer checkpoint writes.
+
+Batch size is per rank: the effective batch is `per_device_train_batch_size *
+world_size * gradient_accumulation_steps`. Hyperparameters are not automatically
+scaled with world size. FSDP and DeepSpeed are rejected for this integration.
+
+The offline integration test launches two real CPU/Gloo processes, verifies
+distinct training batches, identical weights and optimizer states across ranks,
+and saved outputs. Its harness forces CPU accelerator discovery: with the
+current PyTorch/Accelerate versions, CPU barriers can otherwise select this
+Mac's MPS device even with `--use-cpu`. The training script does not patch this
+upstream behavior. CUDA/NCCL execution remains unvalidated.
+
+### Distribution TODOs
+
+Keep the existing gpt-lab update as the reference when evaluating these options:
+
+- [Distributed NorMuon](https://arxiv.org/html/2510.05491v1): sharded state with
+  designated ranks computing full-matrix orthogonalization.
+- [TorchTitan DistMuon](https://github.com/pytorch/torchtitan/blob/main/torchtitan/distributed/flex_shard/dist_muon.py):
+  separate parameter storage layouts from balanced optimizer compute ownership.
+- [Current modded-nanogpt ANVIL](https://github.com/KellerJordan/modded-nanogpt/blob/master/track_1_short/optim/anvil.py):
+  matrix banks partitioned across ranks, with reduce-scatter and all-gather.
+- [DMuon](https://arxiv.org/html/2606.27153v1): owner-based execution with
+  communication overlap and optimized orthogonalization kernels.
+
+These are future approaches, not enabled backends. Evaluate numerical
+equivalence, memory savings, and measured step time before adopting one; ANVIL
+also changes the update algorithm.
 
 Use scientific notation with a decimal point, such as `2.0e-5`, in YAML so
 PyYAML reads it as a number.

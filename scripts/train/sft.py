@@ -2,7 +2,6 @@
 
 from dataclasses import asdict, dataclass
 import json
-import os
 from pathlib import Path
 import re
 import warnings
@@ -12,6 +11,7 @@ import torch
 from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, set_seed
 from trl import SFTConfig, SFTTrainer
 
+from rl_lab.distributed import cleanup_dist_groups, init_distributed
 from rl_lab.engines.transformers import TransformersEngine
 from rl_lab.eval import evaluate_task
 from rl_lab.optim import load_optimizer_config, setup_optimizer
@@ -144,12 +144,14 @@ def main():
         parser.error("Sample limits and --max-new-tokens must be positive")
     if config.max_length is None or config.max_length < 2:
         parser.error("--max-length must be at least 2")
-    if int(os.environ.get("WORLD_SIZE", "1")) != 1:
-        parser.error("This first recipe supports single-process training and evaluation")
+    if config.fsdp or config.deepspeed:
+        parser.error("This recipe supports single-device execution and ordinary DDP, without FSDP or DeepSpeed")
     if config.packing or config.padding_free or not config.completion_only_loss:
         parser.error("This recipe requires answer-only loss with packing and padding-free disabled")
     output = Path(config.output_dir)
-    print(f"Training output: {output}", flush=True)
+    dist_ctx = init_distributed(device_type=config.device.type, random_seed=config.seed)
+    if dist_ctx.rank == 0:
+        print(f"Training output: {output}", flush=True)
     if output.exists() and any(output.iterdir()):
         parser.error("Choose an empty --output-dir to preserve existing runs")
 
@@ -187,36 +189,52 @@ def main():
         optimizer_groups = setup_optimizer(trainer, optimizer_recipe)
     except ValueError as error:
         parser.error(str(error))
-    output.mkdir(parents=True, exist_ok=True)
-    train.to_json(output / "train.jsonl")
-    held_out.to_json(output / "smoltalk-test.jsonl")
-    (output / "recipe.json").write_text(json.dumps({
-        **asdict(recipe), "source": SOURCE, "training": config.to_dict(),
-        "training_max_length": train_max_length, "validation_context_length": context_length,
-        "train_examples": len(train), "eval_examples": len(held_out),
-        "train_fingerprint": train._fingerprint, "eval_fingerprint": held_out._fingerprint,
-        "optimizer_recipe": optimizer_recipe, "optimizer_groups": optimizer_groups,
-    }, indent=2), encoding="utf-8")
+    if dist_ctx.is_distributed:
+        # Prepare for training before evaluation registers an unwrapped model.
+        trainer.create_optimizer()
+        trainer.model_wrapped, trainer.optimizer = trainer.accelerator.prepare(
+            trainer.model, trainer.optimizer,
+        )
+    trainer.accelerator.wait_for_everyone()
+    if dist_ctx.rank == 0:
+        output.mkdir(parents=True, exist_ok=True)
+        train.to_json(output / "train.jsonl")
+        held_out.to_json(output / "smoltalk-test.jsonl")
+        (output / "recipe.json").write_text(json.dumps({
+            **asdict(recipe), "source": SOURCE, "training": config.to_dict(),
+            "world_size": dist_ctx.world_size,
+            "training_max_length": train_max_length, "validation_context_length": context_length,
+            "train_examples": len(train), "eval_examples": len(held_out),
+            "train_fingerprint": train._fingerprint, "eval_fingerprint": held_out._fingerprint,
+            "optimizer_recipe": optimizer_recipe, "optimizer_groups": optimizer_groups,
+        }, indent=2), encoding="utf-8")
 
     before = {"smoltalk_loss": trainer.evaluate()["eval_loss"]}
-    with TransformersEngine(trainer.model, tokenizer) as engine:
-        before["tasks"] = evaluate_tasks(
-            engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
-        )
+    if dist_ctx.rank == 0:
+        with TransformersEngine(trainer.accelerator.unwrap_model(trainer.model), tokenizer) as engine:
+            before["tasks"] = evaluate_tasks(
+                engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
+            )
+    trainer.accelerator.wait_for_everyone()
     trainer.train()
     trainer.save_model()
     trainer.save_state()
     after = {"smoltalk_loss": trainer.evaluate()["eval_loss"]}
+    trainer.accelerator.wait_for_everyone()
     device = config.device
     del trainer
-    with TransformersEngine.load(str(output), device=device, dtype=torch.float32) as engine:
-        after["tasks"] = evaluate_tasks(
-            engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
-        )
-    results = {"before": before, "after": after}
-    (output / "evaluation.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
-    print(json.dumps(results, indent=2))
+    if dist_ctx.rank == 0:
+        with TransformersEngine.load(str(output), device=device, dtype=torch.float32) as engine:
+            after["tasks"] = evaluate_tasks(
+                engine, names, held_out, recipe.eval_limit, recipe.max_new_tokens,
+            )
+        results = {"before": before, "after": after}
+        (output / "evaluation.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+        print(json.dumps(results, indent=2))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        cleanup_dist_groups()
