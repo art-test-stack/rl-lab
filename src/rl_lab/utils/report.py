@@ -1,5 +1,6 @@
 import os, shutil
 import datetime
+import json
 from .common import get_banner, print0, run_command
 from .system import get_git_info, get_gpu_info, get_system_info, estimate_cost
 from .default import REPORTS_FOLDER
@@ -144,11 +145,21 @@ def extract_timestamp(content, prefix):
     return None
 
 class Report:
-    """Maintains a bunch of logs, generates a final markdown report."""
+    """Write JSON artifacts and Markdown sections in a report directory."""
 
     def __init__(self, report_dir):
         os.makedirs(report_dir, exist_ok=True)
         self.report_dir = report_dir
+
+    def write_json(self, filename, data, *, echo=False):
+        """Save a JSON artifact, optionally printing the same formatted content."""
+        content = json.dumps(data, indent=2)
+        file_path = os.path.join(self.report_dir, filename)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        if echo:
+            print(content)
+        return file_path
 
     def log(self, section, data):
         """Log a section of data to the report."""
@@ -294,19 +305,22 @@ class Report:
 # convenience functions
 
 class DummyReport:
+    def write_json(self, *args, **kwargs):
+        pass
     def log(self, *args, **kwargs):
         pass
     def reset(self, *args, **kwargs):
         pass
 
-def get_report():
+def get_report(report_dir=None):
+    """Return a rank-zero writer, using the shared reports directory by default."""
     # just for convenience, only rank 0 logs to report
     # adapted from nanochat.common import get_base_dir, get_dist_info
     # ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
     import os
     ddp_rank = int(os.environ.get("RANK", 0))
     if ddp_rank == 0:
-        return Report(REPORTS_FOLDER)
+        return Report(REPORTS_FOLDER if report_dir is None else report_dir)
     else:
         return DummyReport()
 
