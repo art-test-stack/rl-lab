@@ -66,6 +66,9 @@ Outputs:
   chat templates, aggregate scores, counts, and completion status per model.
 - `model-N-TASK.jsonl`: each scored example, reference, prediction, and score.
   CORE currently exposes only aggregates, so it has no prediction files.
+- `plots/overview.png` and `.pdf`: grouped bars comparing models across
+  benchmarks. CORE appears once using aggregate centered accuracy (`core/core`);
+  other benchmarks use accuracy. Negative CORE scores remain visible.
 - `plots/TASK.png` and `.pdf`: accuracy bars for every named model, annotated
   with scores and example counts. CORE gets a plot for each constituent task;
   its centered aggregate metrics are retained separately in the JSON.

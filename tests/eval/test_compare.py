@@ -16,6 +16,21 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
     pytest.importorskip("matplotlib")
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2]))
     from scripts.eval import compare
+    from matplotlib.figure import Figure
+
+    overview = {}
+    savefig = Figure.savefig
+
+    def capture_overview(figure, path, **kwargs):
+        if Path(path).name == "overview.png":
+            axis = figure.axes[0]
+            overview["benchmarks"] = [tick.get_text() for tick in axis.get_xticklabels()]
+            overview["scores"] = [[bar.get_height() for bar in bars] for bars in axis.containers]
+            overview["models"] = [text.get_text() for text in axis.get_legend().get_texts()]
+            overview["limits"] = axis.get_ylim()
+        return savefig(figure, path, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", capture_overview)
 
     class LocalTask(Task):
         def __init__(self, kind):
@@ -63,7 +78,7 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
     monkeypatch.setattr(compare, "evaluate_task", run)
     monkeypatch.setattr(compare, "evaluate_categorical", categorical)
     monkeypatch.setattr("rl_lab.tasks.core.evaluate_core", lambda *a, **k: {
-        "core/core": 0.25, "all_core_results": {
+        "core/core": -0.25, "all_core_results": {
             "local": {"accuracy": 0.5, "num_examples": 11, "centered_result": 0.25},
         },
     })
@@ -95,7 +110,7 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
     for index, entry in enumerate(results["models"]):
         assert entry["complete"]
         assert set(entry["tasks"]) == set(compare.TASKS) - {"core"} | {"core_local"}
-        assert entry["core_metrics"]["core/core"] == 0.25
+        assert entry["core_metrics"]["core/core"] == -0.25
         record = json.loads((output / f"model-{index}-gsm8k.jsonl").read_text())
         assert record["reference"] == "answer"
         assert record["prediction"] == "generated"
@@ -104,6 +119,14 @@ def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path)
     for name in results["models"][0]["tasks"]:
         assert (output / "plots" / f"{name}.png").stat().st_size > 0
         assert (output / "plots" / f"{name}.pdf").stat().st_size > 0
+    assert overview["benchmarks"] == list(compare.TASKS)[:-1] + ["CORE\n(centered accuracy)"]
+    assert overview["models"] == ["After SFT", "Baseline"]
+    expected_scores = [results["models"][0]["tasks"][name]["score"]
+                       for name in compare.TASKS if name != "core"] + [-0.25]
+    assert overview["scores"] == [expected_scores, expected_scores]
+    assert overview["limits"][0] < -0.25
+    for extension in ("png", "pdf"):
+        assert (output / "plots" / f"overview.{extension}").stat().st_size > 0
     with pytest.raises(ValueError, match="Unknown/unscored"):
         compare.select_tasks("smoltalk")
 

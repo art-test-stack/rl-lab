@@ -197,7 +197,9 @@ limit is `-1`; start with explicit tasks and a small limit for a laptop run.
 
 The output directory contains `evaluation.json` with scores and settings,
 per-model/task JSONL files with examples, references and predictions, and
-`plots/` with one PNG/PDF accuracy bar plot per task. CORE exposes aggregate
+`plots/overview.png` and `.pdf` compare all models across benchmarks, using
+CORE's aggregate centered accuracy. `plots/` also contains one PNG/PDF
+accuracy bar plot per task. CORE exposes aggregate
 results only and gets a plot for each constituent task. The script reuses the
 suite's generation, categorical and CORE scoring protocols.
 

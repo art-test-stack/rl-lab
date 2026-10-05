@@ -233,6 +233,33 @@ def plot_results(results, output):
             fig.savefig(plots / f"{slug}.{extension}", dpi=180)
         plt.close(fig)
 
+    benchmarks = [name for name in names if not name.startswith("core_")]
+    if any("core/core" in model.get("core_metrics", {}) for model in results["models"]):
+        benchmarks.append("core")
+    fig, ax = plt.subplots(figsize=(max(8, 1.5 * len(benchmarks)), 5), layout="constrained")
+    width = 0.8 / len(results["models"])
+    for index, model in enumerate(results["models"]):
+        scores = [model.get("core_metrics", {}).get("core/core", float("nan"))
+                  if name == "core" else model["tasks"].get(name, {}).get("score", float("nan"))
+                  for name in benchmarks]
+        positions = [position - 0.4 + width * (index + 0.5) for position in range(len(benchmarks))]
+        bars = ax.bar(positions, scores, width=width, label=model["label"])
+        ax.bar_label(bars, labels=[f"{score:.1%}" if math.isfinite(score) else "" for score in scores],
+                     padding=3, fontsize=8)
+    ax.set_xticks(range(len(benchmarks)), [
+        "CORE\n(centered accuracy)" if name == "core" else name for name in benchmarks
+    ], rotation=20, ha="right")
+    ax.set_ylim(min(0, ax.get_ylim()[0]) * 1.4, max(1.15, ax.get_ylim()[1]))
+    ax.set_ylabel("Score (accuracy; CORE: centered accuracy)")
+    ax.set_title("Model comparison across benchmarks")
+    ax.axhline(0, color="gray", linewidth=0.8)
+    ax.grid(axis="y", alpha=0.2)
+    ax.set_axisbelow(True)
+    ax.legend()
+    for extension in ("png", "pdf"):
+        fig.savefig(plots / f"overview.{extension}", dpi=180)
+    plt.close(fig)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
