@@ -1,26 +1,55 @@
-"""Single-device GRPO on SimpleSpelling, with exact-match task rewards."""
+"""Single-device GRPO on SimpleSpelling with a Python tool."""
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
+import json
+import math
 import os
 import re
 import warnings
 
 from datasets import Dataset
 from transformers import AutoConfig, AutoTokenizer, HfArgumentParser, set_seed
+from transformers.utils import get_json_schema
 from trl import GRPOConfig, GRPOTrainer
+from trl.chat_template_utils import add_response_schema, get_training_chat_template, supports_tool_calling
 
 from rl_lab.engines.transformers import TransformersEngine
-from rl_lab.eval import evaluate_task
+from rl_lab.optim import load_optimizer_config, setup_optimizer
 from rl_lab.tasks.spellingbee import SimpleSpelling
+from rl_lab.tools.exec import make_python_tool
 from rl_lab.utils.default import MODELS_FOLDER
 from rl_lab.utils.report import get_report
 
 
 SYSTEM_PROMPT = (
-    "Spell the requested word as word:comma-separated-letters. "
-    "For example, cat:c,a,t. Respond only with that answer."
+    "Extract every character of the supplied word and separate the characters with commas. "
+    "Preserve the word exactly, even if it is unfamiliar or misspelled. "
+    "Do not check or correct its spelling. The required answer is the original word, "
+    "a colon, and its comma-separated characters. For example, cat:c,a,t. "
+    "Use the python tool: assign the supplied word to word, then run "
+    "print(word + ':' + ','.join(word)). "
+    "Reply with only the printed answer from stdout, without quotes or explanation."
 )
+
+WORKED_EXAMPLE = [
+    {"role": "user", "content": "Spell the word: cat"},
+    {"role": "assistant", "content": "", "tool_calls": [{
+        "type": "function", "function": {"name": "python", "arguments": {
+            "code": "word = 'cat'\nprint(word + ':' + ','.join(word))",
+        }},
+    }]},
+    {"role": "tool", "name": "python", "content": json.dumps({
+        "success": True, "stdout": "cat:c,a,t\n", "stderr": "", "error": None,
+        "timeout": False, "memory_exceeded": False,
+    })},
+    {"role": "assistant", "content": "cat:c,a,t"},
+]
+
+
+def build_prompt(task, example):
+    return [{"role": "system", "content": SYSTEM_PROMPT}, *WORKED_EXAMPLE,
+            *task.build_eval_input(example).messages]
 
 
 @dataclass
@@ -28,32 +57,85 @@ class RecipeArguments:
     model_name_or_path: str = "Qwen/Qwen2.5-0.5B-Instruct"
     train_limit: int = 128
     eval_limit: int = 32
+    optimizer_config: str = str(Path(__file__).resolve().parents[2] / "configs/optim/qwen-nanochat.yaml")
 
 
-def export_dataset(task, tokenizer, context_length, max_completion_length):
+def configure_optimizer(trainer, path, learning_rate):
+    """Scale nanochat's base rates for RL and the model width."""
+    recipe = load_optimizer_config(path)
+    width_scale = (trainer.model.config.hidden_size / 768) ** -0.5
+    for group in recipe["groups"]:
+        group["hparams"]["lr"] *= learning_rate / 0.004
+        if group["optimizer"] == "adamw":
+            group["hparams"]["lr"] *= width_scale
+    return setup_optimizer(trainer, recipe)
+
+
+def export_dataset(task, tokenizer, context_length, max_completion_length, tools):
     """Export prompts and reward references; reject context overflow."""
     rows = []
     for index in range(len(task)):
         example = task[index]
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *task.build_eval_input(example).messages,
-        ]
-        ids = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+        messages = build_prompt(task, example)
+        ids = tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_dict=False,
+            tools=tools,
+        )
         if len(ids) + max_completion_length > context_length:
             raise ValueError(f"{task.split} example {index} exceeds the model context window")
         rows.append({"prompt": messages, "example": example})
     return Dataset.from_list(rows)
 
 
+def final_answer(messages):
+    """Reward only a final text answer, never a tool call or tool output."""
+    final = messages[-1] if messages else {}
+    content = final.get("content")
+    return content if (final.get("role") == "assistant" and not final.get("tool_calls")
+                       and isinstance(content, str)) else ""
+
+
+def score_model(model, tokenizer, task, max_completion_length, tools, max_tool_rounds, samples_path):
+    samples = []
+    with TransformersEngine(model, tokenizer) as engine:
+        for index in range(len(task)):
+            example = task[index]
+            messages = build_prompt(task, example)
+            try:
+                history = engine.complete(
+                    [messages], tools=tools, max_new_tokens=max_completion_length,
+                    max_tool_rounds=max_tool_rounds,
+                )[0]
+                error = None
+            except (ValueError, RuntimeError) as exception:
+                # Invalid JSON or exhausted generation is a failed answer; preserve runtime failures.
+                if isinstance(exception, RuntimeError) and not any(fragment in str(exception) for fragment in (
+                    "assistant turn reached token limit", "max_tool_rounds exceeded",
+                )):
+                    raise
+                history, error = messages, str(exception)
+            prediction = final_answer(history)
+            samples.append({"example": example, "history": history, "prediction": prediction,
+                            "score": float(task.evaluate(example, prediction)), "error": error})
+    with samples_path.open("w") as stream:
+        for sample in samples:
+            stream.write(json.dumps(sample) + "\n")
+    return {"num_examples": len(samples), "score": sum(row["score"] for row in samples) / len(samples)}
+
+
 def main():
     parser = HfArgumentParser((RecipeArguments, GRPOConfig), description=__doc__)
     parser.set_defaults(
-        max_steps=32, learning_rate=1e-6,
-        per_device_train_batch_size=4, num_generations=4,
-        max_completion_length=64, beta=0.0, loss_type="grpo",
-        bf16=False, fp16=False, gradient_checkpointing=False, disable_dropout=True,
-        save_strategy="steps", save_steps=32, save_total_limit=1,
+        max_steps=-1, num_train_epochs=1, learning_rate=0.0002,
+        per_device_train_batch_size=1, gradient_accumulation_steps=256,
+        generation_batch_size=16, num_generations=16, num_iterations=1,
+        temperature=1.0, top_k=50, top_p=1.0,
+        max_completion_length=256, max_tool_calling_iterations=1,
+        beta=0.0, loss_type="dapo", scale_rewards="none",
+        lr_scheduler_type="linear", warmup_steps=0, weight_decay=0.0, max_grad_norm=0.0,
+        optim="adamw_torch", bf16=False, fp16=False, gradient_checkpointing=True, disable_dropout=True,
+        dataloader_pin_memory=False, shuffle_dataset=False,
+        save_strategy="steps", save_steps=60, save_total_limit=1,
         logging_steps=1, report_to="none", eval_strategy="no",
     )
     arguments, _ = parser.parse_known_args()
@@ -77,6 +159,10 @@ def main():
         parser.error("This recipe evaluates fixed greedy task scores before and after training")
     if min(recipe.train_limit, recipe.eval_limit, config.max_completion_length) < 1:
         parser.error("Sample limits and --max-completion-length must be positive")
+    if not math.isfinite(config.learning_rate) or config.learning_rate <= 0:
+        parser.error("--learning-rate must be finite and positive")
+    if config.max_tool_calling_iterations is None or config.max_tool_calling_iterations < 1:
+        parser.error("--max-tool-calling-iterations must be positive")
     output = Path(config.output_dir)
     if output.exists() and any(output.iterdir()):
         parser.error("Choose an empty --output-dir to preserve existing runs")
@@ -85,54 +171,64 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(recipe.model_name_or_path, padding_side="left")
     if not tokenizer.chat_template:
         parser.error("Choose a model/tokenizer with a chat template")
+    if not supports_tool_calling(tokenizer):
+        parser.error("Choose a tokenizer with a native tool-aware chat template")
+    if getattr(tokenizer, "response_template", None) is None:
+        tokenizer = add_response_schema(tokenizer)
+    tokenizer.chat_template = get_training_chat_template(tokenizer) or tokenizer.chat_template
     if tokenizer.pad_token_id is None:
         if tokenizer.eos_token_id is None:
             parser.error("The tokenizer requires a padding or EOS token")
         tokenizer.pad_token = tokenizer.eos_token
     context_length = AutoConfig.from_pretrained(recipe.model_name_or_path).max_position_embeddings
+    tools = [make_python_tool()]
+    schemas = [get_json_schema(tool) for tool in tools]
     train_task = SimpleSpelling(size=recipe.train_limit, split="train")
     eval_task = SimpleSpelling(size=recipe.eval_limit, split="test")
-    train = export_dataset(train_task, tokenizer, context_length, config.max_completion_length)
-    held_out = export_dataset(eval_task, tokenizer, context_length, config.max_completion_length)
+    train = export_dataset(train_task, tokenizer, context_length, config.max_completion_length, schemas)
+    held_out = export_dataset(eval_task, tokenizer, context_length, config.max_completion_length, schemas)
 
     def spelling_reward(completions, example, **kwargs):
         return [
-            train_task.reward(reference, completion[0]["content"])
+            train_task.reward(reference, final_answer(completion))
             for reference, completion in zip(example, completions, strict=True)
         ]
 
-    trainer = GRPOTrainer(
-        model=recipe.model_name_or_path, args=config, processing_class=tokenizer,
-        train_dataset=train, reward_funcs=spelling_reward,
-    )
     report = get_report(output)
     train.to_json(output / "train.jsonl")
     held_out.to_json(output / "simple-spelling-test.jsonl")
-    report.write_json("recipe.json", {
-        **asdict(recipe), "training": config.to_dict(), "system_prompt": SYSTEM_PROMPT,
+    settings = {
+        **asdict(recipe), "training": config.to_dict(),
+        "system_prompt": SYSTEM_PROMPT,
+        "worked_example": WORKED_EXAMPLE,
+        "tools": schemas, "response_template": tokenizer.response_template,
         "reward": "SimpleSpelling exact match (0/1)", "context_length": context_length,
         "train_fingerprint": train._fingerprint, "eval_fingerprint": held_out._fingerprint,
-    })
+    }
     warnings.warn(
         "Exact-match rewards are sparse: groups with identical rewards give no policy-learning signal. "
-        "Start from a model that sometimes spells correctly; inspect reward and reward_std logs.",
+        "Tools do not guarantee mixed rewards; inspect reward and reward_std logs.",
         stacklevel=1,
     )
-    with TransformersEngine(trainer.model, tokenizer) as engine:
-        before = asdict(evaluate_task(
-            eval_task, engine, batch_size=1, max_new_tokens=config.max_completion_length,
-            system_prompt=SYSTEM_PROMPT,
-        ))
+    trainer = GRPOTrainer(
+        model=recipe.model_name_or_path, args=config, processing_class=tokenizer,
+        train_dataset=train, reward_funcs=spelling_reward,
+        tools=tools,
+    )
+    settings["grpo_optimizer_groups"] = configure_optimizer(trainer, recipe.optimizer_config, config.learning_rate)
+    report.write_json("recipe.json", settings)
+    before = score_model(trainer.model, tokenizer, eval_task, config.max_completion_length,
+                         tools, config.max_tool_calling_iterations, output / "before.jsonl")
+    report.write_json("evaluation.json", {"before": before}, echo=True)
     trainer.train()
     trainer.save_model()
     trainer.save_state()
     device = config.device
     del trainer
     with TransformersEngine.load(str(output), device=device) as engine:
-        after = asdict(evaluate_task(
-            eval_task, engine, batch_size=1, max_new_tokens=config.max_completion_length,
-            system_prompt=SYSTEM_PROMPT,
-        ))
+        engine.tokenizer.response_template = tokenizer.response_template
+        after = score_model(engine.model, engine.tokenizer, eval_task, config.max_completion_length,
+                            tools, config.max_tool_calling_iterations, output / "after.jsonl")
     report.write_json("evaluation.json", {"before": before, "after": after}, echo=True)
 
 
