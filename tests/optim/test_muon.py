@@ -90,8 +90,9 @@ def test_muon_matches_gpt_lab_reference_for_mixed_shapes():
         torch.testing.assert_close(parameter, torch.tensor(case["weight"]), rtol=2e-6, atol=2e-7)
         state = optimizer.state[parameter]
         torch.testing.assert_close(state["momentum_buffer"], torch.tensor(case["momentum"]), rtol=2e-6, atol=2e-7)
+        # Compiled float32 variance differs slightly across CPU platforms.
         torch.testing.assert_close(state["second_momentum_buffer"], torch.tensor(case["second_momentum"]),
-                                   rtol=2e-6, atol=2e-7)
+                                   rtol=2e-5, atol=2e-7)
     assert unused not in optimizer.state
     torch.testing.assert_close(unused, torch.ones_like(unused))
     assert (optimizer.state[parameters[0]]["momentum_buffer"].data_ptr()
