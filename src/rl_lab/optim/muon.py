@@ -7,8 +7,6 @@ from torch.distributed.tensor import DTensor, Shard, distribute_tensor
 
 from .muon_kernel import muon_step_fused
 
-# eager kernels support local testing; compile after profiling launch overhead.
-
 
 def _update(grads, weights, momentum, second_momentum, group):
     rows, columns = weights.shape[-2:]
@@ -18,6 +16,9 @@ def _update(grads, weights, momentum, second_momentum, group):
     )]
     muon_step_fused(grads, weights, momentum, second_momentum, *scalars,
                     group["ns_steps"], -1 if rows >= columns else -2, weights.dtype)
+    if weights.device.type == "mps":
+        # Finish GPU writes before copying or reusing the stacked buffers.
+        torch.mps.synchronize()
 
 
 class Muon(torch.optim.Optimizer):
