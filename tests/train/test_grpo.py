@@ -1,10 +1,13 @@
 """Verify real GRPO optimization offline, with controlled mixed-reward samples."""
 
 import importlib.util
+from contextlib import contextmanager
 import json
 import math
 from pathlib import Path
+from queue import Empty, Queue
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -112,15 +115,37 @@ def test_grpo_rewards_update_and_checkpoint(model, tokenizer, monkeypatch, tmp_p
     monkeypatch.setattr(recipe, "GRPOTrainer", CheckedTrainer)
     evaluation_turns = []
 
-    def evaluation_generate(engine, input_ids, attention_mask, **kwargs):
-        # Control model text while retaining the engine's parser, dispatch and
-        # real subprocess execution, independently of TRL's tool loop.
-        text = request if len(evaluation_turns) % 2 == 0 else answer
-        evaluation_turns.append(text)
-        ids = [tokenizer.convert_tokens_to_ids(text), tokenizer.eos_token_id]
-        return ([(text, None, None, ids)], None)
+    class EvaluationManager:
+        def __init__(self):
+            self.outputs = Queue()
 
-    monkeypatch.setattr(recipe.TransformersEngine, "generate", evaluation_generate)
+        def add_request(self, prompt):
+            text = request if len(evaluation_turns) % 2 == 0 else answer
+            request_id = str(len(evaluation_turns))
+            evaluation_turns.append(text)
+            self.outputs.put(SimpleNamespace(
+                request_id=request_id, prompt_ids=prompt,
+                generated_tokens=[tokenizer.convert_tokens_to_ids(text), tokenizer.eos_token_id],
+                error=None,
+            ))
+            return request_id
+
+        def get_result(self, timeout):
+            try:
+                return self.outputs.get(timeout=timeout)
+            except Empty:
+                return None
+
+        def is_running(self):
+            return True
+
+    @contextmanager
+    def evaluation_manager(model, **kwargs):
+        # Script evaluation text while retaining parsing and real tool execution.
+        model.eval()
+        yield EvaluationManager()
+
+    monkeypatch.setattr(type(model), "continuous_batching_context_manager", evaluation_manager)
     monkeypatch.setattr(recipe, "MODELS_FOLDER", tmp_path / "models")
     output = tmp_path / "models" / "model" / "grpo" / "cpu-smoke"
     monkeypatch.setattr(sys, "argv", [
@@ -134,6 +159,7 @@ def test_grpo_rewards_update_and_checkpoint(model, tokenizer, monkeypatch, tmp_p
     with pytest.warns(UserWarning, match="rewards are sparse"):
         recipe.main()
 
+    assert evaluation_turns == [request, answer] * 4
     assert observed_rewards == [1.0, 0.0, 1.0, 0.0]
     reloaded = AutoModelForCausalLM.from_pretrained(output)
     assert all(torch.isfinite(value).all() for value in reloaded.state_dict().values())
