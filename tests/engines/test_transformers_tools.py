@@ -1,8 +1,10 @@
+from contextlib import contextmanager
 import json
+from queue import Queue, Empty
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
-import torch
 from transformers.utils import get_json_schema
 
 from rl_lab.engines.transformers import TransformersEngine
@@ -24,32 +26,52 @@ RESPONSE_TEMPLATE = {
 
 
 def scripted_generation(model, tokenizer, monkeypatch, rounds):
-    """Script model output while retaining real schema, template and parser code."""
+    """Script manager results while retaining real schema, template and parser code."""
     tokenizer.chat_template = (
         "{% for tool in tools %}{{ tool | tojson }} {% endfor %}"
         "{% for m in messages %}{{ m['role'] }} {{ m.get('content', '') }} "
         "{{ m.get('tool_calls', '') | tojson }} {% endfor %}answer"
     )
-    batches = []
+    responses = []
     for texts in rounds:
-        tokenizer.add_tokens(texts)
-        batches.append([
-            [tokenizer.convert_tokens_to_ids(text), tokenizer.eos_token_id]
-            for text in texts
-        ])
+        for item in texts:
+            text, eos = item if isinstance(item, tuple) else (item, True)
+            tokenizer.add_tokens([text])
+            tokens = [tokenizer.convert_tokens_to_ids(text)]
+            if eos:
+                tokens.append(tokenizer.eos_token_id)
+            responses.append(tokens)
     observed = []
+    outputs = Queue()
 
-    def generate(**kwargs):
-        tokens = batches[len(observed)]
-        observed.append(kwargs)
-        assert kwargs['input_ids'].shape[0] == len(tokens)
-        assert 'past_key_values' not in kwargs
-        return SimpleNamespace(
-            sequences=torch.cat((kwargs['input_ids'], torch.tensor(tokens)), dim=1),
-            past_key_values=object(),
-        )
+    class Manager:
+        def add_request(self, prompt):
+            index = len(observed)
+            observed.append(prompt)
+            request_id = str(index)
+            outputs.put(SimpleNamespace(
+                request_id=request_id, prompt_ids=prompt,
+                generated_tokens=responses[index], error=None,
+            ))
+            return request_id
 
-    monkeypatch.setattr(model, 'generate', generate)
+        def get_result(self, timeout):
+            try:
+                return outputs.get(timeout=timeout)
+            except Empty:
+                return None
+
+        def is_running(self):
+            return True
+
+    @contextmanager
+    def context(**kwargs):
+        assert kwargs['generation_config'].max_new_tokens > 0
+        assert kwargs['warmup'] is False
+        model.eval()
+        yield Manager()
+
+    monkeypatch.setattr(model, 'continuous_batching_context_manager', context)
     return observed
 
 
@@ -82,7 +104,7 @@ def test_complete_dispatches_tools_and_only_resumes_unfinished_chats(
     assert result[1][-1]['content'] == 'done'
     assert len(result[1]) == 2
     assert all(len(messages) == 1 for messages in inputs)
-    assert len(observed) == 2
+    assert len(observed) == 3
 
 
 @pytest.mark.parametrize('tool_request, expected', [
@@ -114,9 +136,9 @@ def test_round_limit_prevents_tool_execution(model, tokenizer, monkeypatch):
         [[{'role': 'user', 'content': 'hello'}], [{'role': 'user', 'content': 'world'}]],
         tools=[fail], response_template=RESPONSE_TEMPLATE, max_tool_rounds=0,
     )
-    assert result[0] is None
+    assert result[0][-1] == {'role': 'assistant', 'content': request}
     assert result[1][-1]['content'] == 'done'
-    assert len(observed) == 1
+    assert len(observed) == 2
 
 
 @pytest.mark.parametrize('generated_text', [
@@ -128,18 +150,7 @@ def test_truncated_turn_returns_generated_text_without_executing_tools(model, to
         """A tool that must not run."""
         pytest.fail('truncated tool call was executed')
 
-    tokenizer.add_tokens([generated_text, 'done'])
-
-    def generate(**kwargs):
-        return SimpleNamespace(
-            sequences=torch.cat((kwargs['input_ids'], torch.tensor([
-                [tokenizer.convert_tokens_to_ids(generated_text), tokenizer.pad_token_id],
-                [tokenizer.convert_tokens_to_ids('done'), tokenizer.eos_token_id],
-            ])), dim=1),
-            past_key_values=object(),
-        )
-
-    monkeypatch.setattr(model, 'generate', generate)
+    scripted_generation(model, tokenizer, monkeypatch, [[(generated_text, False), 'done']])
     result = TransformersEngine(model, tokenizer).complete(
         [[{'role': 'user', 'content': 'hello'}], [{'role': 'user', 'content': 'world'}]],
         tools=[fail], response_template=RESPONSE_TEMPLATE, max_new_tokens=2,
@@ -171,12 +182,80 @@ def test_malformed_chat_leaves_batch_without_retry(model, tokenizer, monkeypatch
     result = TransformersEngine(model, tokenizer).complete(
         inputs, tools=[record], response_template=RESPONSE_TEMPLATE,
     )
-    assert result[0] is None
+    assert result[0][-1] == {'role': 'assistant', 'content': invalid}
     assert result[1][-1]['content'] == 'finished'
     assert result[2][-1]['content'] == 'done'
     assert called == [True]
-    assert [batch['input_ids'].shape[0] for batch in observed] == [3, 1]
+    assert len(observed) == 4
     assert all(len(messages) == 1 for messages in inputs)
+
+
+def test_slow_tool_does_not_block_another_chat(model, tokenizer, monkeypatch):
+    started = Event()
+    release = Event()
+
+    def slow() -> str:
+        """Wait for the other chat to finish."""
+        started.set()
+        assert release.wait(5), 'other chat did not progress while the tool waited'
+        return 'slow result'
+
+    def fast() -> str:
+        """Return immediately."""
+        return 'fast result'
+
+    scripted_generation(model, tokenizer, monkeypatch, [
+        ['<tool_call>{"name":"slow","arguments":{}}</tool_call>',
+         '<tool_call>{"name":"fast","arguments":{}}</tool_call>'],
+        ['fast finished', 'slow finished'],
+    ])
+    parse = tokenizer.parse_response
+
+    def parse_response(tokens, **kwargs):
+        message = parse(tokens, **kwargs)
+        if message['content'] == 'fast finished':
+            assert started.wait(5)
+            release.set()
+        return message
+
+    monkeypatch.setattr(tokenizer, 'parse_response', parse_response)
+    inputs = [[{'role': 'user', 'content': word}] for word in ['hello', 'world']]
+    result = TransformersEngine(model, tokenizer).complete(
+        inputs, tools=[slow, fast], response_template=RESPONSE_TEMPLATE,
+    )
+    assert result[0][-1]['content'] == 'slow finished'
+    assert result[1][-1]['content'] == 'fast finished'
+    assert model.training  # Manager evaluation mode must not leak into training.
+
+
+def test_manager_failure_propagates_and_restores_training(model, tokenizer, monkeypatch):
+    scripted_generation(model, tokenizer, monkeypatch, [['done']])
+    original_context = model.continuous_batching_context_manager
+    closed = []
+
+    @contextmanager
+    def context(**kwargs):
+        with original_context(**kwargs) as manager:
+            get_result = manager.get_result
+
+            def failed_result(timeout):
+                output = get_result(timeout)
+                output.error = 'generation failed'
+                return output
+
+            manager.get_result = failed_result
+            try:
+                yield manager
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr(model, 'continuous_batching_context_manager', context)
+    with pytest.raises(RuntimeError, match='generation failed'):
+        TransformersEngine(model, tokenizer).complete(
+            [[{'role': 'user', 'content': 'hello'}]], response_template=RESPONSE_TEMPLATE,
+        )
+    assert closed == [True]
+    assert model.training
 
 
 def test_python_tool_schema_execution_and_timeout():
