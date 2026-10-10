@@ -119,14 +119,15 @@ def test_grpo_rewards_update_and_checkpoint(model, tokenizer, monkeypatch, tmp_p
         def __init__(self):
             self.outputs = Queue()
 
-        def add_request(self, prompt):
+        def add_request(self, prompt, *, streaming):
+            assert streaming is True
             text = request if len(evaluation_turns) % 2 == 0 else answer
             request_id = str(len(evaluation_turns))
             evaluation_turns.append(text)
             self.outputs.put(SimpleNamespace(
                 request_id=request_id, prompt_ids=prompt,
                 generated_tokens=[tokenizer.convert_tokens_to_ids(text), tokenizer.eos_token_id],
-                error=None,
+                error=None, is_finished=lambda: True,
             ))
             return request_id
 

@@ -45,13 +45,14 @@ def scripted_generation(model, tokenizer, monkeypatch, rounds):
     outputs = Queue()
 
     class Manager:
-        def add_request(self, prompt):
+        def add_request(self, prompt, *, streaming):
+            assert streaming is True
             index = len(observed)
             observed.append(prompt)
             request_id = str(index)
             outputs.put(SimpleNamespace(
                 request_id=request_id, prompt_ids=prompt,
-                generated_tokens=responses[index], error=None,
+                generated_tokens=responses[index], error=None, is_finished=lambda: True,
             ))
             return request_id
 
@@ -64,6 +65,9 @@ def scripted_generation(model, tokenizer, monkeypatch, rounds):
         def is_running(self):
             return True
 
+        def cancel_request(self, request_id):
+            pytest.fail('completed scripted requests do not need cancellation')
+
     @contextmanager
     def context(**kwargs):
         assert kwargs['generation_config'].max_new_tokens > 0
@@ -75,8 +79,9 @@ def scripted_generation(model, tokenizer, monkeypatch, rounds):
     return observed
 
 
+@pytest.mark.parametrize('return_token_counts', [False, True])
 def test_complete_dispatches_tools_and_only_resumes_unfinished_chats(
-    model, tokenizer, monkeypatch,
+    model, tokenizer, monkeypatch, return_token_counts,
 ):
     called = []
 
@@ -97,6 +102,7 @@ def test_complete_dispatches_tools_and_only_resumes_unfinished_chats(
     inputs = [[{'role': 'user', 'content': 'hello'}], [{'role': 'user', 'content': 'world'}]]
     result = TransformersEngine(model, tokenizer).complete(
         inputs, tools=[multiply], response_template=RESPONSE_TEMPLATE,
+        return_token_counts=return_token_counts,
     )
     assert called == [(3, 4)]  # Native parser casts according to the tool schema.
     assert result[0][-2] == {'role': 'tool', 'name': 'multiply', 'content': '12'}
@@ -105,6 +111,12 @@ def test_complete_dispatches_tools_and_only_resumes_unfinished_chats(
     assert len(result[1]) == 2
     assert all(len(messages) == 1 for messages in inputs)
     assert len(observed) == 3
+    if return_token_counts:
+        assert result[0][-3]['completion_tokens'] == 2  # Tool call plus EOS.
+        assert result[0][-1]['completion_tokens'] == 2  # Answer plus EOS.
+        assert result[1][-1]['completion_tokens'] == 2
+    else:
+        assert all('completion_tokens' not in message for history in result for message in history)
 
 
 @pytest.mark.parametrize('tool_request, expected', [
@@ -143,7 +155,7 @@ def test_round_limit_prevents_tool_execution(model, tokenizer, monkeypatch):
 
 @pytest.mark.parametrize('generated_text', [
     'partial answer',
-    '<tool_call>{"name":"fail","arguments":{}}</tool_call>',
+    '<tool_call>not json</tool_call>',
 ])
 def test_truncated_turn_returns_generated_text_without_executing_tools(model, tokenizer, monkeypatch, generated_text):
     def fail() -> str:
@@ -159,6 +171,28 @@ def test_truncated_turn_returns_generated_text_without_executing_tools(model, to
         {'role': 'user', 'content': 'hello'},
         {'role': 'assistant', 'content': generated_text},
     ]
+    assert result[1][-1]['content'] == 'done'
+
+
+@pytest.mark.parametrize('call_count', [1, 2])
+def test_first_tool_call_without_eos_is_executed(model, tokenizer, monkeypatch, call_count):
+    called = []
+
+    def record() -> str:
+        """Record one invocation."""
+        called.append(True)
+        return 'ok'
+
+    request = '<tool_call>{"name":"record","arguments":{}}</tool_call>' * call_count
+    scripted_generation(model, tokenizer, monkeypatch, [[(request, False), 'done'], ['finished']])
+    result = TransformersEngine(model, tokenizer).complete(
+        [[{'role': 'user', 'content': 'hello'}], [{'role': 'user', 'content': 'world'}]],
+        tools=[record], response_template=RESPONSE_TEMPLATE,
+    )
+    assert called == [True]
+    assert len(result[0][-3]['tool_calls']) == 1
+    assert result[0][-2] == {'role': 'tool', 'name': 'record', 'content': 'ok'}
+    assert result[0][-1]['content'] == 'finished'
     assert result[1][-1]['content'] == 'done'
 
 
@@ -226,6 +260,94 @@ def test_slow_tool_does_not_block_another_chat(model, tokenizer, monkeypatch):
     assert result[0][-1]['content'] == 'slow finished'
     assert result[1][-1]['content'] == 'fast finished'
     assert model.training  # Manager evaluation mode must not leak into training.
+
+
+def test_streamed_tool_call_pauses_only_its_request(model, tokenizer, monkeypatch):
+    started = Event()
+    release = Event()
+    calls = []
+    cancelled = []
+    submitted = []
+    outputs = Queue()
+
+    def slow() -> str:
+        """Wait while the other conversation continues generating."""
+        calls.append(True)
+        started.set()
+        assert release.wait(5), 'other conversation did not finish'
+        return 'tool result'
+
+    scripted_generation(model, tokenizer, monkeypatch, [])
+    partial_call = '<tool_call>{"name":"slow","arguments":{}}'
+    pieces = [partial_call, '</tool_call>', 'peer', 'finished', 'resumed']
+    tokenizer.add_tokens(pieces)
+    partial, close, peer, finished, resumed = [tokenizer.convert_tokens_to_ids(piece) for piece in pieces]
+
+    def output(request_id, prompt, tokens, terminal=False, error=None):
+        return SimpleNamespace(
+            request_id=request_id, prompt_ids=prompt, generated_tokens=tokens,
+            error=error, is_finished=lambda: terminal,
+        )
+
+    class Manager:
+        def add_request(self, prompt, *, streaming):
+            assert streaming is True
+            request_id = str(len(submitted))
+            submitted.append(prompt)
+            if request_id == '0':
+                outputs.put(output(request_id, prompt, [partial]))
+                outputs.put(output(request_id, prompt, [partial, close]))
+                # A cancelled request may already have another result queued.
+                outputs.put(output(request_id, prompt, [partial, close], True, 'stale error'))
+            elif request_id == '1':
+                outputs.put(output(request_id, prompt, [peer]))
+                outputs.put(output(request_id, prompt, [peer, finished], True))
+            else:
+                outputs.put(output(request_id, prompt, [resumed], True))
+            return request_id
+
+        def get_result(self, timeout):
+            try:
+                result = outputs.get(timeout=timeout)
+            except Empty:
+                return None
+            if (result.request_id == '0' and result.generated_tokens == [partial, close]
+                    and result.error is None):
+                assert calls == []  # Valid JSON alone must not trigger before the closing marker.
+            if result.request_id == '1':
+                assert started.wait(5)
+                assert cancelled == ['0']
+                if result.is_finished():
+                    release.set()
+            return result
+
+        def cancel_request(self, request_id):
+            cancelled.append(request_id)
+
+        def is_running(self):
+            return True
+
+    @contextmanager
+    def context(**kwargs):
+        model.eval()
+        yield Manager()
+
+    monkeypatch.setattr(model, 'continuous_batching_context_manager', context)
+    result = TransformersEngine(model, tokenizer).complete(
+        [[{'role': 'user', 'content': 'hello'}], [{'role': 'user', 'content': 'world'}]],
+        tools=[slow], response_template=RESPONSE_TEMPLATE,
+        return_token_counts=True,
+    )
+    assert calls == [True]
+    assert cancelled == ['0']
+    assert len(submitted) == 3
+    assert result[0][-2] == {'role': 'tool', 'name': 'slow', 'content': 'tool result'}
+    assert result[0][-1]['content'] == 'resumed'
+    assert result[0][-3]['completion_tokens'] == 2  # Cumulative stream counted once, at cancellation.
+    assert result[0][-1]['completion_tokens'] == 1
+    assert result[1][-1]['completion_tokens'] == 2
+    assert result[1][-1]['content'] == tokenizer.decode([peer, finished], skip_special_tokens=True)
+    assert model.training
 
 
 def test_manager_failure_propagates_and_restores_training(model, tokenizer, monkeypatch):
