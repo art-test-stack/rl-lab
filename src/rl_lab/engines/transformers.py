@@ -1,12 +1,13 @@
 """Inference on an existing causal LM, or a separately loaded HF model."""
 
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from inspect import signature
 from typing import Callable, Sequence
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.utils import get_json_schema
+from transformers.generation import ContinuousBatchingConfig
 
 from .base import (
     CompletionEngine,
@@ -53,23 +54,20 @@ class TransformersEngine(CompletionEngine):
         max_new_tokens: int = 512,
         temperature: float = 0.0,
         top_p: float = 1.0,
-    ) -> list[list[dict] | None]:
-        """Complete chats in batch rounds, executing registered Python callables.
+    ) -> list[list[dict]]:
+        """Complete chats with Transformers' continuous batching manager.
 
-        Return copied histories or None for failed chats in input order.
-        Only unfinished chats enter the next round. Tool calls run sequentially
-        after the entire batch returns.
-        Each round re-encodes full histories without reusing a generation cache.
-        ``max_new_tokens`` limits each assistant turn; ``max_tool_rounds`` limits
-        tool-bearing turns per chat, followed by one final generation round.
+        Return copied histories in input order. Tools run in worker threads
+        across chats, sequentially within each chat; other chats keep generating.
+        Each tool result is appended before submitting that chat's next turn.
+        Callables must enforce their own timeouts and tolerate concurrent calls.
 
         Parsing uses the supplied response template or the tokenizer's own.
-        The model/chat template must support tool use. Turns without EOS return
-        the generated text as a final assistant message without executing tools.
-        Malformed responses and exhausted tool rounds return None
-        for that chat; configuration and generation failures still raise.
-        Unknown tools and callable exceptions become tool error responses.
-        Callables must enforce their own timeouts, as the Python wrapper does.
+        Truncated or malformed responses and requests beyond max_tool_rounds
+        return generated text without executing tools from that turn.
+        Configuration and generation failures raise; unknown tools and callable
+        exceptions become tool error responses. The model must support paged
+        attention. max_new_tokens limits each assistant turn.
         """
         if self.model is None:
             raise RuntimeError("Engine is closed")
@@ -92,88 +90,103 @@ class TransformersEngine(CompletionEngine):
         histories = [deepcopy(list(messages)) for messages in conversations]
         if any(not messages for messages in histories):
             raise ValueError("Conversations must contain at least one message")
-        active = list(range(len(histories)))
-        pad = self.tokenizer.pad_token_id
-        if pad is None:
-            pad = self.tokenizer.eos_token_id
-        if pad is None:
-            raise ValueError("complete requires a pad_token_id or eos_token_id")
+        if not histories:
+            return histories
         eos = self.model.generation_config.eos_token_id
         eos_ids = {eos} if isinstance(eos, int) else set(eos or [])
-        if not eos_ids:
-            raise ValueError("complete requires configured EOS token IDs")
+        generation_config = deepcopy(self.model.generation_config)
+        generation_config.update(max_new_tokens=max_new_tokens, do_sample=temperature > 0)
+        if temperature > 0:
+            generation_config.update(temperature=temperature, top_p=top_p, top_k=0)
 
-        for round_index in range(max_tool_rounds + 1):
-            if not active:
-                break
-            rows = [list(self.tokenizer.apply_chat_template(
-                histories[index], tools=schemas, tokenize=True,
-                add_generation_prompt=True, return_dict=False,
-            )) for index in active]
-            width = max(map(len, rows))
-            if any(not row for row in rows):
-                raise ValueError("Chat template produced an empty prompt")
-            ids = torch.full((len(rows), width), pad, dtype=torch.long)
-            masks = torch.zeros_like(ids)
-            for row_index, row in enumerate(rows):
-                ids[row_index, width - len(row):] = torch.tensor(row)
-                masks[row_index, width - len(row):] = 1
-            outputs, _ = self.generate(
-                ids, masks, max_new_tokens=max_new_tokens,
-                temperature=temperature, top_p=top_p,
-            )
-            parsed = []
-            # Validate every turn before executing any tool in this round.
-            for index, row, output in zip(active, rows, outputs, strict=True):
-                tokens = output[3]
-                if not tokens or tokens[-1] not in eos_ids:
-                    histories[index].append({"role": "assistant", "content": output[0]})
-                    continue
+        def execute_tools(calls):
+            results = []
+            for call in calls:
+                function = call["function"]
+                name, arguments = function["name"], function["arguments"]
                 try:
-                    message = self.tokenizer.parse_response(
-                        tokens, schema=response_template, prefix=row, tools=schemas,
-                    )
-                    if message.get("role") != "assistant":
-                        raise ValueError("Response template must produce an assistant message")
+                    if name not in registry:
+                        raise ValueError(f"Unknown tool: {name}")
+                    content = str(registry[name](**arguments))
+                except Exception as error:
+                    content = f"{type(error).__name__}: {error}"
+                result = {"role": "tool", "name": name, "content": content}
+                if "id" in call:
+                    result["tool_call_id"] = call["id"]
+                results.append(result)
+            return results
+
+        ready = list(range(len(histories)))
+        pending = {}
+        running_tools = {}
+        rounds = [0] * len(histories)
+        was_training = self.model.training
+        try:
+            with ThreadPoolExecutor() as workers, self.model.continuous_batching_context_manager(
+                generation_config=generation_config,
+                continuous_batching_config=ContinuousBatchingConfig(
+                    max_requests_per_batch=len(histories),
+                ),
+                warmup=False,
+            ) as manager:
+                while ready or pending or running_tools:
+                    for index, future in list(running_tools.items()):
+                        if future.done():
+                            histories[index].extend(future.result())
+                            del running_tools[index]
+                            ready.append(index)
+                    for index in ready:
+                        prompt = list(self.tokenizer.apply_chat_template(
+                            histories[index], tools=schemas, tokenize=True,
+                            add_generation_prompt=True, return_dict=False,
+                        ))
+                        if not prompt:
+                            raise ValueError("Chat template produced an empty prompt")
+                        request_id = manager.add_request(prompt)
+                        if request_id is None:
+                            raise RuntimeError("Continuous batching manager rejected a request")
+                        pending[request_id] = index
+                    ready = []
+                    if not pending and not running_tools:
+                        break
+                    output = manager.get_result(timeout=0.05)
+                    if output is None:
+                        if not manager.is_running():
+                            raise RuntimeError("Continuous batching manager stopped before completion")
+                        continue
+                    if output.error is not None:
+                        raise RuntimeError(output.error)
+                    index = pending.pop(output.request_id)
+                    tokens = output.generated_tokens
+                    text = self.tokenizer.decode(tokens, skip_special_tokens=True)
+                    message = {"role": "assistant", "content": text}
+                    if tokens and tokens[-1] in eos_ids:
+                        try:
+                            message = self.tokenizer.parse_response(
+                                tokens, schema=response_template, prefix=output.prompt_ids, tools=schemas,
+                            )
+                            if message.get("role") != "assistant":
+                                raise ValueError("Response template must produce an assistant message")
+                            calls = message.get("tool_calls", [])
+                            if not isinstance(calls, list):
+                                raise ValueError("Parsed tool_calls must be a list")
+                            for call in calls:
+                                function = call.get("function") if isinstance(call, dict) else None
+                                if (not isinstance(function, dict)
+                                        or not isinstance(function.get("name"), str)
+                                        or not isinstance(function.get("arguments"), dict)):
+                                    raise ValueError("Parsed tool calls need a function name and argument dict")
+                        except ValueError:
+                            message = {"role": "assistant", "content": text}
+                        if message.get("tool_calls") and rounds[index] >= max_tool_rounds:
+                            message = {"role": "assistant", "content": text}
+                    histories[index].append(message)
                     calls = message.get("tool_calls", [])
-                    if not isinstance(calls, list):
-                        raise ValueError("Parsed tool_calls must be a list")
-                    for call in calls:
-                        function = call.get("function") if isinstance(call, dict) else None
-                        if (not isinstance(function, dict)
-                                or not isinstance(function.get("name"), str)
-                                or not isinstance(function.get("arguments"), dict)):
-                            raise ValueError("Parsed tool calls need a function name and argument dict")
-                except ValueError:
-                    histories[index] = None
-                    continue
-                if calls and round_index == max_tool_rounds:
-                    histories[index] = None
-                    continue
-                parsed.append((index, message))
-            continuing = []
-            for index, message in parsed:
-                histories[index].append(message)
-                calls = message.get("tool_calls", [])
-                if not calls:
-                    continue
-                for call in calls:
-                    function = call["function"]
-                    name, arguments = function["name"], function["arguments"]
-                    try:
-                        if name not in registry:
-                            raise ValueError(f"Unknown tool: {name}")
-                        tool = registry[name]
-                        signature(tool).bind(**arguments)
-                        content = str(tool(**arguments))
-                    except Exception as error:
-                        content = f"{type(error).__name__}: {error}"
-                    result = {"role": "tool", "name": name, "content": content}
-                    if "id" in call:
-                        result["tool_call_id"] = call["id"]
-                    histories[index].append(result)
-                continuing.append(index)
-            active = continuing
+                    if calls:
+                        rounds[index] += 1
+                        running_tools[index] = workers.submit(execute_tools, calls)
+        finally:
+            self.model.train(was_training)
         return histories
 
     def generate(
