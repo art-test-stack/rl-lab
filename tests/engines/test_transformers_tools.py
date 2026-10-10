@@ -109,36 +109,74 @@ def test_round_limit_prevents_tool_execution(model, tokenizer, monkeypatch):
         pytest.fail('tool ran despite round limit')
 
     request = '<tool_call>{"name":"fail","arguments":{}}</tool_call>'
-    scripted_generation(model, tokenizer, monkeypatch, [[request]])
-    with pytest.raises(RuntimeError, match='max_tool_rounds exceeded'):
-        TransformersEngine(model, tokenizer).complete(
-            [[{'role': 'user', 'content': 'hello'}]], tools=[fail],
-            response_template=RESPONSE_TEMPLATE, max_tool_rounds=0,
-        )
+    observed = scripted_generation(model, tokenizer, monkeypatch, [[request, 'done']])
+    result = TransformersEngine(model, tokenizer).complete(
+        [[{'role': 'user', 'content': 'hello'}], [{'role': 'user', 'content': 'world'}]],
+        tools=[fail], response_template=RESPONSE_TEMPLATE, max_tool_rounds=0,
+    )
+    assert result[0] is None
+    assert result[1][-1]['content'] == 'done'
+    assert len(observed) == 1
 
 
-def test_truncated_turn_prevents_tool_execution(model, tokenizer, monkeypatch):
+@pytest.mark.parametrize('generated_text', [
+    'partial answer',
+    '<tool_call>{"name":"fail","arguments":{}}</tool_call>',
+])
+def test_truncated_turn_returns_generated_text_without_executing_tools(model, tokenizer, monkeypatch, generated_text):
     def fail() -> str:
         """A tool that must not run."""
         pytest.fail('truncated tool call was executed')
 
-    request = '<tool_call>{"name":"fail","arguments":{}}</tool_call>'
-    tokenizer.add_tokens([request])
+    tokenizer.add_tokens([generated_text, 'done'])
 
     def generate(**kwargs):
         return SimpleNamespace(
             sequences=torch.cat((kwargs['input_ids'], torch.tensor([
-                [tokenizer.convert_tokens_to_ids(request)]
+                [tokenizer.convert_tokens_to_ids(generated_text), tokenizer.pad_token_id],
+                [tokenizer.convert_tokens_to_ids('done'), tokenizer.eos_token_id],
             ])), dim=1),
             past_key_values=object(),
         )
 
     monkeypatch.setattr(model, 'generate', generate)
-    with pytest.raises(RuntimeError, match='assistant turn reached token limit'):
-        TransformersEngine(model, tokenizer).complete(
-            [[{'role': 'user', 'content': 'hello'}]], tools=[fail],
-            response_template=RESPONSE_TEMPLATE, max_new_tokens=1,
-        )
+    result = TransformersEngine(model, tokenizer).complete(
+        [[{'role': 'user', 'content': 'hello'}], [{'role': 'user', 'content': 'world'}]],
+        tools=[fail], response_template=RESPONSE_TEMPLATE, max_new_tokens=2,
+    )
+    assert result[0] == [
+        {'role': 'user', 'content': 'hello'},
+        {'role': 'assistant', 'content': generated_text},
+    ]
+    assert result[1][-1]['content'] == 'done'
+
+
+@pytest.mark.parametrize('invalid', [
+    '<tool_call>not json</tool_call>',
+    '<tool_call>{"name":"record","arguments":[]}</tool_call>',
+])
+def test_malformed_chat_leaves_batch_without_retry(model, tokenizer, monkeypatch, invalid):
+    called = []
+
+    def record() -> str:
+        """Record one invocation."""
+        called.append(True)
+        return 'ok'
+
+    request = '<tool_call>{"name":"record","arguments":{}}</tool_call>'
+    observed = scripted_generation(
+        model, tokenizer, monkeypatch, [[invalid, request, 'done'], ['finished']],
+    )
+    inputs = [[{'role': 'user', 'content': word}] for word in ['hello', 'world', 'hello']]
+    result = TransformersEngine(model, tokenizer).complete(
+        inputs, tools=[record], response_template=RESPONSE_TEMPLATE,
+    )
+    assert result[0] is None
+    assert result[1][-1]['content'] == 'finished'
+    assert result[2][-1]['content'] == 'done'
+    assert called == [True]
+    assert [batch['input_ids'].shape[0] for batch in observed] == [3, 1]
+    assert all(len(messages) == 1 for messages in inputs)
 
 
 def test_python_tool_schema_execution_and_timeout():
