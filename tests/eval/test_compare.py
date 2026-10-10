@@ -12,6 +12,55 @@ from rl_lab.eval import EvalResult
 from rl_lab.tasks._base import Task
 
 
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("error", [None, ValueError("invalid configuration"), RuntimeError("generation failed")])
+def test_tool_generated_text_is_scored_without_retry(monkeypatch, batch_size, error):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2]))
+    from scripts.eval import compare
+
+    class Question(Task):
+        def num_examples(self):
+            return 2
+
+        def get_example(self, index):
+            return {"messages": [{"role": "user", "content": str(index)},
+                                 {"role": "assistant", "content": "answer"}]}
+
+        def evaluate(self, example, prediction):
+            return float(prediction == "answer")
+
+    calls = []
+    def complete(conversations, **kwargs):
+        calls.append(conversations)
+        if error is not None:
+            raise error
+        return [messages + [{"role": "assistant", "content":
+                            "invalid" if messages[-1]["content"] == "0" else "answer"}]
+                for messages in conversations]
+
+    records = []
+    args = SimpleNamespace(max_per_task=-1, batch_size=batch_size,
+                           max_new_tokens=32, max_tool_rounds=2)
+    def run():
+        return compare.evaluate_with_tools(
+            Question(), SimpleNamespace(complete=complete), "gsm8k", args, [], None,
+            lambda index, example, prediction, score, **extra:
+                records.append({"index": index, "prediction": prediction, "score": score, **extra}),
+        )
+
+    if error is not None:
+        with pytest.raises(type(error), match=str(error)):
+            run()
+        assert len(calls) == 1
+        return
+    result = run()
+    assert result.num_examples == 2 and result.score == 0.5
+    assert records[0]["prediction"] == "invalid" and records[0]["score"] == 0.0
+    assert records[0]["history"][-1]["content"] == "invalid"
+    assert records[1]["score"] == 1 and records[1]["prediction"] == "answer"
+    assert len(calls) == 2 // batch_size
+
+
 def test_named_models_default_tasks_predictions_and_plots(monkeypatch, tmp_path):
     pytest.importorskip("matplotlib")
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[2]))

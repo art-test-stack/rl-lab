@@ -101,22 +101,13 @@ def score_model(model, tokenizer, task, max_completion_length, tools, max_tool_r
         for index in range(len(task)):
             example = task[index]
             messages = build_prompt(task, example)
-            try:
-                history = engine.complete(
-                    [messages], tools=tools, max_new_tokens=max_completion_length,
-                    max_tool_rounds=max_tool_rounds,
-                )[0]
-                error = None
-            except (ValueError, RuntimeError) as exception:
-                # Invalid JSON or exhausted generation is a failed answer; preserve runtime failures.
-                if isinstance(exception, RuntimeError) and not any(fragment in str(exception) for fragment in (
-                    "assistant turn reached token limit", "max_tool_rounds exceeded",
-                )):
-                    raise
-                history, error = messages, str(exception)
+            history = engine.complete(
+                [messages], tools=tools, max_new_tokens=max_completion_length,
+                max_tool_rounds=max_tool_rounds,
+            )[0]
             prediction = final_answer(history)
             samples.append({"example": example, "history": history, "prediction": prediction,
-                            "score": float(task.evaluate(example, prediction)), "error": error})
+                            "score": float(task.evaluate(example, prediction))})
     with samples_path.open("w") as stream:
         for sample in samples:
             stream.write(json.dumps(sample) + "\n")
