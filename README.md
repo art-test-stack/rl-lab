@@ -34,17 +34,16 @@ the other recipes and backends shown below are planned integrations.
              │                                   │
      Inference backends                    Training backend
      - Transformers                       - plain PyTorch
-     - vLLM (planned)                     - DDP/FSDP2
-     - SGLang (planned)                   - TorchTitan
-     - custom                             - future gpt-lab
+     - custom                             - DDP/FSDP2
+                                          - TorchTitan
+                                          - future gpt-lab
 ```
 
 
 ## Inference engines
 
 The Transformers engine executes inference using attached training weights or a
-standalone model. vLLM and SGLang are recognized by the factory but currently
-raise `NotImplementedError`.
+standalone model.
 
 ### Use the current training weights
 
@@ -109,9 +108,6 @@ tokens. Token usage reflects the model's prompt and generated token counts. Gree
 
 The evaluator currently supports generation-based tasks. Categorical candidate
 scoring is deferred until it is needed by on-policy methods.
-
-The `vllm` and `sglang` factory names remain reserved for future backends; calling
-either currently raises `NotImplementedError`.
 
 ### Tests
 
