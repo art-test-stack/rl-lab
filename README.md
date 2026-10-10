@@ -4,12 +4,13 @@ RL-lab is a lightweight, educational project for PyTorch-native post-training
 recipes, using [Transformers](https://github.com/huggingface/transformers).
 
 For the GPT-2 / one-turn SmolTalk training script, see the [SFT recipe](docs/sft.md).
+For single-device GRPO on SimpleSpelling, see the [RL recipe](docs/grpo.md).
 
 
 ## Target architecture
 
 This diagram describes the intended design, not a list of implemented features.
-The Transformers inference adapter and a basic TRL SFT recipe are implemented;
+The Transformers inference adapter and TRL SFT and single-device GRPO recipes are implemented;
 the other recipes and backends shown below are planned integrations.
 
 ```text
@@ -33,17 +34,16 @@ the other recipes and backends shown below are planned integrations.
              │                                   │
      Inference backends                    Training backend
      - Transformers                       - plain PyTorch
-     - vLLM (planned)                     - DDP/FSDP2
-     - SGLang (planned)                   - TorchTitan
-     - custom                             - future gpt-lab
+     - custom                             - DDP/FSDP2
+                                          - TorchTitan
+                                          - future gpt-lab
 ```
 
 
 ## Inference engines
 
 The Transformers engine executes inference using attached training weights or a
-standalone model. vLLM and SGLang are recognized by the factory but currently
-raise `NotImplementedError`.
+standalone model.
 
 ### Use the current training weights
 
@@ -108,9 +108,6 @@ tokens. Token usage reflects the model's prompt and generated token counts. Gree
 
 The evaluator currently supports generation-based tasks. Categorical candidate
 scoring is deferred until it is needed by on-policy methods.
-
-The `vllm` and `sglang` factory names remain reserved for future backends; calling
-either currently raises `NotImplementedError`.
 
 ### Tests
 

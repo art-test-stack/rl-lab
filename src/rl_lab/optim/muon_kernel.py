@@ -4,7 +4,7 @@ Source: https://github.com/art-test-stack/gpt-lab/blob/master/src/gpt_lab/optim/
 Source blob: 98d112b52b0cb59f06cecce67c45ab4dd2cad798
 Copyright (c) 2024 Keller Jordan; modified by Arthur Testard.
 MIT license: see LICENSE and LICENSES/modded-nanogpt-MIT.txt.
-Runs eagerly; the reference's arithmetic is preserved.
+Uses the reference's static compilation and arithmetic with a scoped cache limit.
 """
 
 import torch
@@ -20,6 +20,10 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
+# Static matrix buckets across models share this function's compilation cache.
+@torch.compiler.config.patch(recompile_limit=64)
+@torch.no_grad()
+@torch.compile(dynamic=False, fullgraph=True)
 def muon_step_fused(
     stacked_grads: Tensor,          # (12, 768, 3072) - stacked gradients
     stacked_params: Tensor,         # (12, 768, 3072) - stacked parameters
@@ -35,7 +39,7 @@ def muon_step_fused(
 ) -> None:
     """
     Muon step: momentum -> polar_express -> variance_reduction -> cautious_update.
-    Uses the reference's 0-D CPU scalars and eager arithmetic.
+    Uses the reference's 0-D CPU scalars in one compiled graph.
     """
 
     # Nesterov momentum

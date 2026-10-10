@@ -21,15 +21,17 @@ Overall this sandbox is good for evaluation of generated code and protects again
 accidental destructive behavior, but it is not safe against malicious adversarial code.
 """
 
+import builtins
 import contextlib
 import faulthandler
 import io
 import json
 import math
-import multiprocessing
 import os
 import platform
 import signal
+import subprocess
+import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
@@ -202,7 +204,7 @@ def reliability_guard(maximum_memory_bytes: Optional[int] = None):
 
     subprocess.Popen = None  # type: ignore
 
-    __builtins__["help"] = None
+    builtins.help = None
 
     import sys
 
@@ -309,18 +311,14 @@ def execute_code(
         'hello world\\n'
     """
 
-    manager = multiprocessing.Manager()
-    result_dict = manager.dict()
-
-    p = multiprocessing.Process(
-        target=_unsafe_execute,
-        args=(code, timeout, maximum_memory_bytes, result_dict)
-    )
-    p.start()
-    p.join(timeout=timeout + 1)
-
-    if p.is_alive():
-        p.kill()
+    # A standalone worker avoids importing the caller's training/model code.
+    try:
+        process = subprocess.run(
+            [sys.executable, os.path.abspath(__file__)],
+            input=json.dumps([code, timeout, maximum_memory_bytes]),
+            capture_output=True, text=True, timeout=timeout + 1,
+        )
+    except subprocess.TimeoutExpired:
         return ExecutionResult(
             success=False,
             stdout="",
@@ -330,24 +328,17 @@ def execute_code(
             memory_exceeded=False,
         )
 
-    if not result_dict:
+    try:
+        return ExecutionResult(**json.loads(process.stdout))
+    except (ValueError, TypeError):
         return ExecutionResult(
             success=False,
             stdout="",
-            stderr="",
+            stderr=process.stderr,
             error="Execution failed (no result returned)",
-            timeout=True,
+            timeout=False,
             memory_exceeded=False,
         )
-
-    return ExecutionResult(
-        success=result_dict["success"],
-        stdout=result_dict["stdout"],
-        stderr=result_dict["stderr"],
-        error=result_dict["error"],
-        timeout=result_dict["timeout"],
-        memory_exceeded=result_dict["memory_exceeded"],
-    )
 
 
 def make_python_tool(
@@ -380,3 +371,10 @@ def make_python_tool(
         )))
 
     return python
+
+
+if __name__ == "__main__":
+    arguments = json.load(sys.stdin)
+    result = {}
+    _unsafe_execute(*arguments, result)
+    print(json.dumps(result))

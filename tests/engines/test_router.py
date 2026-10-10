@@ -34,9 +34,3 @@ def test_legacy_config_does_not_ignore_options():
         EngineRouter.create(
             EngineConfig("transformers", "model", tensor_parallel_size=2)
         )
-
-
-@pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_unimplemented_backends_raise_not_implemented(backend):
-    with pytest.raises(NotImplementedError, match="not implemented"):
-        create_engine(backend, model_name="model")

@@ -1,0 +1,27 @@
+# nanochat base rates; the recipe applies stage and AdamW width scaling.
+groups:
+  - name: tied_embeddings_and_head
+    patterns: [model.embed_tokens.weight, lm_head.weight]
+    optimizer: adamw
+    hparams:
+      lr: 0.004
+      betas: [0.8, 0.96]
+      eps: 1.0e-10
+      weight_decay: 0.0
+  - name: matrices
+    patterns: ["model.layers.*.self_attn.*.weight", "model.layers.*.mlp.*.weight"]
+    optimizer: muon
+    hparams:
+      lr: 0.02
+      momentum: 0.95
+      beta: 0.9
+      ns_steps: 5
+      weight_decay: 0.0
+  - name: biases_and_norms
+    patterns: ["model.layers.*.self_attn.*.bias", "model.layers.*.*layernorm.weight", model.norm.weight]
+    optimizer: adamw
+    hparams:
+      lr: 0.004
+      betas: [0.8, 0.95]
+      eps: 1.0e-10
+      weight_decay: 0.0
