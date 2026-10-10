@@ -53,19 +53,22 @@ class TransformersEngine(CompletionEngine):
         max_new_tokens: int = 512,
         temperature: float = 0.0,
         top_p: float = 1.0,
-    ) -> list[list[dict]]:
+    ) -> list[list[dict] | None]:
         """Complete chats in batch rounds, executing registered Python callables.
 
-        Return copied histories in input order. Only unfinished chats enter the
-        next round. Tool calls run sequentially after the entire batch returns.
+        Return copied histories or None for failed chats in input order.
+        Only unfinished chats enter the next round. Tool calls run sequentially
+        after the entire batch returns.
         Each round re-encodes full histories without reusing a generation cache.
         ``max_new_tokens`` limits each assistant turn; ``max_tool_rounds`` limits
         tool-bearing turns per chat, followed by one final generation round.
 
         Parsing uses the supplied response template or the tokenizer's own.
-        The model/chat template must support tool use and end turns with EOS.
-        Truncated turns, malformed responses and exhausted tool rounds raise;
-        unknown tools and callable exceptions become tool error responses.
+        The model/chat template must support tool use. Turns without EOS return
+        the generated text as a final assistant message without executing tools.
+        Malformed responses and exhausted tool rounds return None
+        for that chat; configuration and generation failures still raise.
+        Unknown tools and callable exceptions become tool error responses.
         Callables must enforce their own timeouts, as the Python wrapper does.
         """
         if self.model is None:
@@ -124,26 +127,32 @@ class TransformersEngine(CompletionEngine):
             for index, row, output in zip(active, rows, outputs, strict=True):
                 tokens = output[3]
                 if not tokens or tokens[-1] not in eos_ids:
-                    raise RuntimeError(f"Conversation {index}: assistant turn reached token limit")
-                message = self.tokenizer.parse_response(
-                    tokens, schema=response_template, prefix=row, tools=schemas,
-                )
-                if message.get("role") != "assistant":
-                    raise ValueError("Response template must produce an assistant message")
-                calls = message.get("tool_calls", [])
-                if not isinstance(calls, list):
-                    raise ValueError("Parsed tool_calls must be a list")
-                for call in calls:
-                    function = call.get("function") if isinstance(call, dict) else None
-                    if (not isinstance(function, dict)
-                            or not isinstance(function.get("name"), str)
-                            or not isinstance(function.get("arguments"), dict)):
-                        raise ValueError("Parsed tool calls need a function name and argument dict")
+                    histories[index].append({"role": "assistant", "content": output[0]})
+                    continue
+                try:
+                    message = self.tokenizer.parse_response(
+                        tokens, schema=response_template, prefix=row, tools=schemas,
+                    )
+                    if message.get("role") != "assistant":
+                        raise ValueError("Response template must produce an assistant message")
+                    calls = message.get("tool_calls", [])
+                    if not isinstance(calls, list):
+                        raise ValueError("Parsed tool_calls must be a list")
+                    for call in calls:
+                        function = call.get("function") if isinstance(call, dict) else None
+                        if (not isinstance(function, dict)
+                                or not isinstance(function.get("name"), str)
+                                or not isinstance(function.get("arguments"), dict)):
+                            raise ValueError("Parsed tool calls need a function name and argument dict")
+                except ValueError:
+                    histories[index] = None
+                    continue
                 if calls and round_index == max_tool_rounds:
-                    raise RuntimeError(f"Conversation {index}: max_tool_rounds exceeded")
-                parsed.append(message)
+                    histories[index] = None
+                    continue
+                parsed.append((index, message))
             continuing = []
-            for index, message in zip(active, parsed, strict=True):
+            for index, message in parsed:
                 histories[index].append(message)
                 calls = message.get("tool_calls", [])
                 if not calls:
