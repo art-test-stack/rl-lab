@@ -1,4 +1,4 @@
-"""Single-device SFT mixing spelling tool demonstrations and short SmolTalk exchanges."""
+"""Single-device SFT mixing short-request VPO spelling demonstrations and SmolTalk."""
 
 from dataclasses import asdict, dataclass
 import json
@@ -16,6 +16,7 @@ from trl.chat_template_utils import add_response_schema, get_training_chat_templ
 from rl_lab.optim import load_optimizer_config, setup_optimizer
 from rl_lab.tasks.smoltalk import SmolTalk
 from rl_lab.tasks.spellingbee import SimpleSpelling
+from rl_lab.tasks.spelling_vpo import ANSWER_INSTRUCTION
 from rl_lab.tools.exec import make_python_tool
 from rl_lab.utils.default import MODELS_FOLDER
 from rl_lab.utils.report import get_report
@@ -23,6 +24,16 @@ from rl_lab.utils.report import get_report
 
 SYSTEM_PROMPT = "You are a helpful assistant. Use available tools when they help answer the user's request."
 SOURCE = "smol-magpie-ultra-short"
+TRAIN_REQUESTS = (
+    "Spell the word: {word}",
+    "Spell '{word}' character by character.",
+    "List the letters of '{word}' in order.",
+    "How do you spell '{word}'?",
+)
+EVAL_REQUESTS = (
+    "Break '{word}' into individual letters.",
+    "Show each character in '{word}', in its original order.",
+)
 
 
 @dataclass
@@ -33,15 +44,15 @@ class RecipeArguments:
     optimizer_config: str | None = None
 
 
-def spelling_demonstration(example):
+def spelling_demonstration(example, request_template):
     word = example["messages"][0]["content"].removeprefix("Spell the word: ")
     answer = example["messages"][-1]["content"]
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        example["messages"][0],
+        {"role": "system", "content": SYSTEM_PROMPT + ANSWER_INSTRUCTION},
+        {"role": "user", "content": request_template.format(word=word)},
         {"role": "assistant", "content": (
-            f"Extract every character of {word!r} without correcting it. "
-            "Use Python to print the original word, a colon, and its comma-separated characters."
+            f"Spell {word!r} without correcting it. "
+            "I'll use Python to extract every character in order."
         ), "tool_calls": [{"type": "function", "function": {
             "name": "python", "arguments": {
                 "code": f"word = {word!r}\nprint(word + ':' + ','.join(word))",
@@ -51,7 +62,9 @@ def spelling_demonstration(example):
             "success": True, "stdout": answer + "\n", "stderr": "", "error": None,
             "timeout": False, "memory_exceeded": False,
         })},
-        {"role": "assistant", "content": answer},
+        {"role": "assistant", "content": (
+            f"<answer_1>{answer}</answer_1>\n<answer_2>{answer}</answer_2>"
+        )},
     ]
 
 
@@ -59,9 +72,10 @@ def export_datasets(split, limit, tokenizer, max_length, tools):
     """Keep complete conversations within the context limit; never truncate demonstrations."""
     spelling = []
     task = SimpleSpelling(size=limit, split=split)
+    requests = TRAIN_REQUESTS if split == "train" else EVAL_REQUESTS
     for index in range(len(task)):
-        messages = spelling_demonstration(task[index])
-        if len(tokenizer.apply_chat_template(messages, tools=tools, tokenize=True)) > max_length:
+        messages = spelling_demonstration(task[index], requests[index % len(requests)])
+        if len(tokenizer.apply_chat_template(messages, tools=tools, tokenize=True, return_dict=False)) > max_length:
             raise ValueError("A spelling demonstration exceeds --max-length")
         spelling.append({"messages": messages, "tools": tools})
     general = []
@@ -76,7 +90,7 @@ def export_datasets(split, limit, tokenizer, max_length, tools):
             if any(not isinstance(m["content"], str) or not m["content"].strip() for m in exchange):
                 continue
             messages = [{"role": "system", "content": SYSTEM_PROMPT}, *exchange]
-            if len(tokenizer.apply_chat_template(messages, tools=tools, tokenize=True)) > max_length:
+            if len(tokenizer.apply_chat_template(messages, tools=tools, tokenize=True, return_dict=False)) > max_length:
                 continue
             general.append({"messages": messages, "tools": tools})
             if len(general) == limit:
@@ -162,6 +176,8 @@ def main():
         dataset.to_json(output / f"{name}-test.jsonl")
     report.write_json("recipe.json", {
         **asdict(recipe), "training": config.to_dict(), "system_prompt": SYSTEM_PROMPT,
+        "spelling_system_prompt": SYSTEM_PROMPT + ANSWER_INSTRUCTION,
+        "train_request_templates": TRAIN_REQUESTS, "eval_request_templates": EVAL_REQUESTS,
         "model_dtype": str(next(trainer.model.parameters()).dtype),
         "general_source": SOURCE, "train_examples_per_source": recipe.train_limit,
         "tools": tools, "optimizer_recipe": optimizer_recipe, "optimizer_groups": groups,
