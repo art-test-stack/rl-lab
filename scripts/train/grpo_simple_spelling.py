@@ -17,6 +17,8 @@ from trl.chat_template_utils import add_response_schema, get_training_chat_templ
 from rl_lab.engines.transformers import TransformersEngine
 from rl_lab.optim import load_optimizer_config, setup_optimizer
 from rl_lab.tasks.spellingbee import SimpleSpelling
+from rl_lab.tasks.spelling_rewards import REWARD_NAMES
+from rl_lab.tasks.spelling_vpo import ANSWER_INSTRUCTION, WEIGHT_SAMPLES, make_vpo_reward, parse_candidates
 from rl_lab.tools.exec import make_python_tool
 from rl_lab.utils.default import MODELS_FOLDER
 from rl_lab.utils.report import get_report
@@ -47,8 +49,9 @@ WORKED_EXAMPLE = [
 ]
 
 
-def build_prompt(task, example):
-    return [{"role": "system", "content": SYSTEM_PROMPT}, *WORKED_EXAMPLE,
+def build_prompt(task, example, system_prompt=SYSTEM_PROMPT, use_worked_example=True):
+    return [{"role": "system", "content": system_prompt},
+            *(WORKED_EXAMPLE if use_worked_example else []),
             *task.build_eval_input(example).messages]
 
 
@@ -57,11 +60,16 @@ class RecipeArguments:
     model_name_or_path: str = "Qwen/Qwen2.5-0.5B-Instruct"
     train_limit: int = 128
     eval_limit: int = 32
+    system_prompt: str = SYSTEM_PROMPT
+    use_worked_example: bool = True
+    reward_mode: str = "exact"
     optimizer_config: str = str(Path(__file__).resolve().parents[2] / "configs/optim/qwen-nanochat.yaml")
 
 
 def configure_optimizer(trainer, path, learning_rate):
-    """Scale nanochat's base rates for RL and the model width."""
+    """Use the trainer optimizer for an empty path; otherwise scale grouped rates."""
+    if not path:
+        return setup_optimizer(trainer, None)
     recipe = load_optimizer_config(path)
     width_scale = (trainer.model.config.hidden_size / 768) ** -0.5
     for group in recipe["groups"]:
@@ -71,12 +79,13 @@ def configure_optimizer(trainer, path, learning_rate):
     return setup_optimizer(trainer, recipe)
 
 
-def export_dataset(task, tokenizer, context_length, max_completion_length, tools):
+def export_dataset(task, tokenizer, context_length, max_completion_length, tools,
+                   system_prompt=SYSTEM_PROMPT, use_worked_example=True):
     """Export prompts and reward references; reject context overflow."""
     rows = []
     for index in range(len(task)):
         example = task[index]
-        messages = build_prompt(task, example)
+        messages = build_prompt(task, example, system_prompt, use_worked_example)
         ids = tokenizer.apply_chat_template(
             messages, tokenize=True, add_generation_prompt=True, return_dict=False,
             tools=tools,
@@ -95,19 +104,22 @@ def final_answer(messages):
                        and isinstance(content, str)) else ""
 
 
-def score_model(model, tokenizer, task, max_completion_length, tools, max_tool_rounds, samples_path):
+def score_model(model, tokenizer, task, max_completion_length, tools, max_tool_rounds, samples_path,
+                system_prompt=SYSTEM_PROMPT, use_worked_example=True, reward_mode="exact"):
     samples = []
     with TransformersEngine(model, tokenizer) as engine:
         for index in range(len(task)):
             example = task[index]
-            messages = build_prompt(task, example)
+            messages = build_prompt(task, example, system_prompt, use_worked_example)
             history = engine.complete(
                 [messages], tools=tools, max_new_tokens=max_completion_length,
                 max_tool_rounds=max_tool_rounds,
             )[0]
             prediction = final_answer(history)
+            candidates = parse_candidates(prediction) if reward_mode == "vpo" else [prediction]
             samples.append({"example": example, "history": history, "prediction": prediction,
-                            "score": float(task.evaluate(example, prediction))})
+                            "candidates": candidates,
+                            "score": max(float(task.evaluate(example, candidate)) for candidate in candidates)})
     with samples_path.open("w") as stream:
         for sample in samples:
             stream.write(json.dumps(sample) + "\n")
@@ -140,6 +152,16 @@ def main():
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         parser.error("This recipe requires a single process and device")
     recipe, config = parser.parse_args_into_dataclasses()
+    if recipe.reward_mode not in {"exact", "vpo"}:
+        parser.error("--reward-mode must be exact or vpo")
+    if recipe.reward_mode == "vpo":
+        if recipe.use_worked_example:
+            parser.error("VPO requires --use-worked-example false; the existing example is single-answer")
+        if config.scale_rewards != "none" or config.multi_objective_aggregation != "sum_then_normalize":
+            parser.error("VPO requires --scale-rewards none and sum_then_normalize aggregation")
+        if config.reward_weights is not None and config.reward_weights != [1.0]:
+            parser.error("VPO requires a single unweighted advantage callback")
+        recipe.system_prompt += ANSWER_INSTRUCTION
     if config.world_size != 1 or config.fsdp or config.deepspeed or config.parallelism_config:
         parser.error("This recipe requires a single process and device without FSDP or DeepSpeed")
     if config.use_vllm or config.use_transformers_continuous_batching or config.use_transformers_paged:
@@ -176,8 +198,10 @@ def main():
     schemas = [get_json_schema(tool) for tool in tools]
     train_task = SimpleSpelling(size=recipe.train_limit, split="train")
     eval_task = SimpleSpelling(size=recipe.eval_limit, split="test")
-    train = export_dataset(train_task, tokenizer, context_length, config.max_completion_length, schemas)
-    held_out = export_dataset(eval_task, tokenizer, context_length, config.max_completion_length, schemas)
+    train = export_dataset(train_task, tokenizer, context_length, config.max_completion_length, schemas,
+                           recipe.system_prompt, recipe.use_worked_example)
+    held_out = export_dataset(eval_task, tokenizer, context_length, config.max_completion_length, schemas,
+                              recipe.system_prompt, recipe.use_worked_example)
 
     def spelling_reward(completions, example, **kwargs):
         return [
@@ -190,26 +214,36 @@ def main():
     held_out.to_json(output / "simple-spelling-test.jsonl")
     settings = {
         **asdict(recipe), "training": config.to_dict(),
-        "system_prompt": SYSTEM_PROMPT,
-        "worked_example": WORKED_EXAMPLE,
+        "system_prompt": recipe.system_prompt,
+        "worked_example": WORKED_EXAMPLE if recipe.use_worked_example else [],
         "tools": schemas, "response_template": tokenizer.response_template,
         "reward": "SimpleSpelling exact match (0/1)", "context_length": context_length,
         "train_fingerprint": train._fingerprint, "eval_fingerprint": held_out._fingerprint,
     }
+    reward_func = spelling_reward
+    if recipe.reward_mode == "vpo":
+        reward_func = make_vpo_reward(config.num_generations, config.seed, output / "vpo-rollouts.jsonl")
+        settings.update(reward="VPO normalized set advantage; see vpo/set_reward for raw rewards",
+                        evaluation="best-of-two exact spelling",
+                        vpo={"candidates_per_rollout": 2, "weight_samples": WEIGHT_SAMPLES,
+                             "reward_names": REWARD_NAMES, "dirichlet_alpha": 1.0})
     warnings.warn(
-        "Exact-match rewards are sparse: groups with identical rewards give no policy-learning signal. "
-        "Tools do not guarantee mixed rewards; inspect reward and reward_std logs.",
+        ("VPO requires varying set rewards: inspect vpo/group_std and vpo/parsed_fraction."
+         if recipe.reward_mode == "vpo" else
+         "Exact-match rewards are sparse: groups with identical rewards give no policy-learning signal. "
+         "Tools do not guarantee mixed rewards; inspect reward and reward_std logs."),
         stacklevel=1,
     )
     trainer = GRPOTrainer(
         model=recipe.model_name_or_path, args=config, processing_class=tokenizer,
-        train_dataset=train, reward_funcs=spelling_reward,
+        train_dataset=train, reward_funcs=reward_func,
         tools=tools,
     )
     settings["grpo_optimizer_groups"] = configure_optimizer(trainer, recipe.optimizer_config, config.learning_rate)
     report.write_json("recipe.json", settings)
     before = score_model(trainer.model, tokenizer, eval_task, config.max_completion_length,
-                         tools, config.max_tool_calling_iterations, output / "before.jsonl")
+                         tools, config.max_tool_calling_iterations, output / "before.jsonl",
+                         recipe.system_prompt, recipe.use_worked_example, recipe.reward_mode)
     report.write_json("evaluation.json", {"before": before}, echo=True)
     trainer.train()
     trainer.save_model()
@@ -219,7 +253,8 @@ def main():
     with TransformersEngine.load(str(output), device=device) as engine:
         engine.tokenizer.response_template = tokenizer.response_template
         after = score_model(engine.model, engine.tokenizer, eval_task, config.max_completion_length,
-                            tools, config.max_tool_calling_iterations, output / "after.jsonl")
+                            tools, config.max_tool_calling_iterations, output / "after.jsonl",
+                            recipe.system_prompt, recipe.use_worked_example, recipe.reward_mode)
     report.write_json("evaluation.json", {"before": before, "after": after}, echo=True)
 
 
