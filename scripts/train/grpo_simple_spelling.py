@@ -18,7 +18,7 @@ from rl_lab.engines.transformers import TransformersEngine
 from rl_lab.optim import load_optimizer_config, setup_optimizer
 from rl_lab.tasks.spellingbee import SimpleSpelling
 from rl_lab.tasks.spelling_rewards import REWARD_NAMES
-from rl_lab.tasks.spelling_vpo import ANSWER_INSTRUCTION, WEIGHT_SAMPLES, make_vpo_reward, parse_candidates
+from rl_lab.tasks.spelling_vpo import ANSWER_INSTRUCTION, WEIGHT_SAMPLES, WHITESPACE_PENALTY, make_vpo_reward, parse_candidates
 from rl_lab.tools.exec import make_python_tool
 from rl_lab.utils.default import MODELS_FOLDER
 from rl_lab.utils.report import get_report
@@ -226,7 +226,8 @@ def main():
         settings.update(reward="VPO normalized set advantage; see vpo/set_reward for raw rewards",
                         evaluation="best-of-two exact spelling",
                         vpo={"candidates_per_rollout": 2, "weight_samples": WEIGHT_SAMPLES,
-                             "reward_names": REWARD_NAMES, "dirichlet_alpha": 1.0})
+                             "reward_names": REWARD_NAMES, "dirichlet_alpha": 1.0,
+                             "whitespace_penalty": WHITESPACE_PENALTY})
     warnings.warn(
         ("VPO requires varying set rewards: inspect vpo/group_std and vpo/parsed_fraction."
          if recipe.reward_mode == "vpo" else
