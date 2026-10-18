@@ -16,10 +16,8 @@ class EngineConfig:
 def create_engine(
     backend: str, *, model=None, model_name: str | None = None, tokenizer=None, **kwargs
 ) -> CompletionEngine:
-    if backend not in {"transformers", "vllm", "sglang"}:
-        raise ValueError(f"Unknown engine {backend!r}; choose transformers, vllm or sglang")
-    if backend in {"vllm", "sglang"}:
-        raise NotImplementedError(f"The {backend} engine is not implemented yet")
+    if backend != "transformers":
+        raise ValueError(f"Unknown engine {backend!r}; choose transformers")
     if model is not None:
         if model_name is not None:
             raise ValueError("Pass model or model_name, not both")
@@ -36,11 +34,9 @@ def create_engine(
         raise ValueError("tokenizer is only accepted with an attached model")
     if not model_name:
         raise ValueError("Standalone engines require model_name")
-    if backend == "transformers":
-        from .transformers import TransformersEngine
+    from .transformers import TransformersEngine
 
-        return TransformersEngine.load(model_name, **kwargs)
-    raise AssertionError("validated backend must have been handled")
+    return TransformersEngine.load(model_name, **kwargs)
 
 
 class EngineRouter:
@@ -55,6 +51,6 @@ class EngineRouter:
             kwargs["dtype"] = config.dtype
         if config.backend == "transformers" and config.tensor_parallel_size != 1:
             raise ValueError(
-                "tensor_parallel_size is only supported by the vllm and sglang factories"
+                "The transformers engine requires tensor_parallel_size=1"
             )
         return create_engine(config.backend, model_name=config.model, **kwargs)

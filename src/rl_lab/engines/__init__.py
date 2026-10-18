@@ -1,4 +1,4 @@
-"""Inference adapters with lazy imports of optional backend dependencies."""
+"""Inference adapters with lazy imports of backend dependencies."""
 
 from .base import (
     ChatPrompt,
